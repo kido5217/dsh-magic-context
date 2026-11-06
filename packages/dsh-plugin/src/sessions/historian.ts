@@ -131,7 +131,7 @@ export class Historian {
 				executeFlush(this.db, mcSession);
 				return { fromSeq, toSeq };
 			},
-			effect: () => this.head.foldRebaselineEffect(session, { mcSession, subagent: request.subagent }, coveredSeqs),
+			effect: () => this.head.foldRebaselineEffect(session, { mcSession, subagent: request.subagent, projection: request.projection }, coveredSeqs),
 		});
 		return { shadow, fromOrdinal: fromSeq, toOrdinal: toSeq };
 	}

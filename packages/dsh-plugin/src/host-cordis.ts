@@ -141,6 +141,14 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 		const agent = ctx.agents.get(SessionId(sessionId));
 		return agent ? wrapSession(ctx, agent.session) : undefined;
 	};
+	// T044: the band's window is the CURRENT routed model's capacity, resolved
+	// from the provider catalog on every pre-step that carries a model
+	// selection. The meter's recorded window describes the LAST request's
+	// model, so after a mid-session route switch (or an agent-default change)
+	// pricing against it both misbands the pass and can deadlock a refusal —
+	// the refusal blocks the very request that would refresh the reading
+	// (spec Edge Cases — model switch; observed live on 0.2.2-rc.1).
+	const routedWindows = new Map<string, number>();
 	return {
 		ctx,
 		getSession,
@@ -150,9 +158,11 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 			const meter: TokenMeter | undefined = (ctx as { tokenMeter?: TokenMeter }).tokenMeter;
 			if (!meter) return undefined;
 			const projection = meter.contextPressure(agent.session);
+			const routed = routedWindows.get(sessionId);
+			const contextWindow = routed ?? projection.contextWindow;
 			return {
 				...(projection.pressureTokens !== undefined ? { pressureTokens: projection.pressureTokens } : {}),
-				...(projection.contextWindow !== undefined ? { contextWindow: projection.contextWindow } : {}),
+				...(contextWindow !== undefined ? { contextWindow } : {}),
 			};
 		},
 		llmStream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -175,6 +185,25 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 				(async (): Promise<AgentPreStepDecision> => {
 					const sessionId = payload.agent.session.id;
 					observeModel?.(payload.modelSelection);
+					if (payload.modelSelection !== undefined) {
+						// Resolve the routed model's capacity for band pricing
+						// (see routedWindows). Best effort: an unresolved route
+						// falls back to the meter's recorded window.
+						try {
+							const prepared = await ctx.llm.prepareCall({
+								provider: payload.modelSelection.provider,
+								model: payload.modelSelection.model,
+							});
+							const capacity = prepared.context?.contextWindow;
+							if (capacity !== undefined) routedWindows.set(sessionId, capacity);
+							else routedWindows.delete(sessionId);
+							log(`[dsh-magic-context] routed window for ${sessionId}: ${payload.modelSelection.provider}/${payload.modelSelection.model} ⇒ ${capacity ?? "undisclosed"}`);
+						} catch {
+							routedWindows.delete(sessionId);
+						}
+					} else {
+						routedWindows.delete(sessionId);
+					}
 					if (source !== undefined) {
 						// The pass bridge reads the snapshot synchronously; refresh
 						// it here, the one async moment before every listener. A

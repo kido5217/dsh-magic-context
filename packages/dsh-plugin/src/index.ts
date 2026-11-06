@@ -117,7 +117,7 @@ export function mountAdapter(host: DshHost, config: MagicContextConfig, db: Cont
 	// drops, head management, the historian fold and the pressure lanes, all
 	// mounted behind one pre-step listener. Sessions join the compaction claim
 	// at first attach (lanes.ts documents the choice).
-	const head = new HeadManager(db, managedEdits, config);
+	const head = new HeadManager(db, managedEdits, config, opts.projectDir ?? process.cwd());
 	const historian = new Historian(host, db, config, managedEdits, head, opts.historianRoute);
 	const dropApplier = new DropApplier(db, managedEdits);
 	const lanes = new PressureLanes({ host, db, config, mapping, claim: compaction, meter, head, historian, dropApplier, readSessionLog: opts.readSessionLog ?? ( () => undefined) });

@@ -45,13 +45,16 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
    the routed window, a force/refuse pass halves the verbatim budget so pressure can still
    find a foldable window; on request-transform harnesses the same protections apply per
    request without a fold-time tension. v1 scope — DSH-imposed only.
-10. **v1 scope — head renders guidance + compartments + facts only.** Aging tiers,
-    project-memory blocks and the mural ride the full `renderCompartmentInjection`
-    pipeline (core-host-agnostic work, not host-forced); historian v1 publishes one
-    flat P1-style compartment per fold with a minimal summarizer prompt (the core
-    compartment prompt targets agent runners) and no memory promotion — subagent rule
-    sets (`rules.summarizerMemoryWrites`) gate the later enablement. Not a parity gap:
-    flagged for a follow-up pass, applies equally to every harness.
+10. **v1 scope — head renders guidance + compartments + facts + project memory +
+    temporal ranges.** The head block is built through the same core renderers as the
+    full injection pipeline (`buildCompartmentBlock` with the memory block, budget trim,
+    rendered-id capture and cache snapshot, plus date ranges resolved from durable-log
+    timestamps), so `ctx_search` hard-filtering behaves identically. What remains
+    deferred is the v2 tiered render (P1–P4 aging) and the mural: the DSH historian
+    publishes one flat P1-style compartment per fold with a minimal summarizer prompt
+    (the core compartment prompt targets agent runners) and no memory promotion — tier
+    aging is dreamer-maintained work and rides entry 14. Not a host-forced gap: flagged
+    for a follow-up pass, applies equally to every harness once the dreamer lane runs.
 11. **DSH-imposed — `/compact` declines while MC manages.** The host's `CompactionResult`
     contract (compaction/start|summary|end event seqs, `@deepseek-ai/dsh-compaction` 0.2.2-rc.1)
     is a request-eraser protocol; an MC pass is a scheduled lane pass, not an eraser run, so
@@ -75,13 +78,28 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
     restriction is a repo-internal gate with no runtime enforcement, and the ignorable
     marker is the documented compatibility mechanism for out-of-repo plugin events.
 
-## Not applicable on DSH (host lacks or does not need the surface)
+ 14. **Declared — dreamer maintenance does not run on DSH (v1).** The core dreamer is a
+     host-driven maintenance lane: `features/magic-context/dreamer/` schedules its passes
+     through the OpenCode plugin lifecycle (`cron.ts`) and runs them as hidden *host
+     sessions* (the host forks a conversation and the dreamer prompt steers it) — a surface
+     DSH does not offer at that seam: there is no session-fork API, and a plugin cannot
+     spawn a durable conversation without user-visible surface effects. The decided
+     follow-up mechanism (plan `sessions/` decision) is an aux-model lane: a scheduler off
+     the pre-step pass running `ctx.llm.stream()` directly (the historian summarizer's
+     shape), keyed off the historian cadence, reusing the core classify/curate/verify
+     prompts unchanged. Effect on DSH-only fleets: compartment tier aging, memory
+     promotion/curation and expiry sweeps do not run — memories stay exactly as tools and
+     folds wrote them. Cross-harness fleets are unaffected in the read direction: DSH
+     sessions render and search what an OpenCode dreamer maintains (shared store).
+     Declared per spec edge case 3 ("silence is not an option"), not silently skipped.
 
-- **v1 scope — transcript FTS indexing not wired.** The core `message_history_index`/FTS pipeline
-  is driven by OpenCode per-message hooks (`message-index-async.ts`); DSH has no equivalent
-  message-committed hook wired in v1, so `message_history_index` stays empty for DSH sessions and
-  raw-transcript full-text recall is not available. Memory capture, recall, and the whole V3
-  cross-harness path are unaffected (proven live: both directions read/write the shared
-  `memories` store). Flagged for a follow-up pass; not a parity gap against the *managed* surface.
+## Resolved since the v1 ledger was written
+
+- **Transcript FTS indexing — wired through the pass lane (T045).** The core
+  `message-index-async.ts` pipeline needs a message-committed hook; DSH has none, so the
+  pass feeds it instead: after each pass projects the log, the adapter reconciles the
+  projected messages (append-only revision = projected length) and incrementally schedules
+  every newly projected message. `ctx_search`'s history lane answers on DSH sessions with
+  durable seqs as the coordinate; the rows carry `harness='dsh'`.
 - Local token estimation: DSH ships a token meter that prices routed models; MC reads the
   meter instead of re-tokenizing (same thresholds — no config divergence).

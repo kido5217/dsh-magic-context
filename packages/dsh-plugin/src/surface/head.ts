@@ -18,18 +18,26 @@
  *   host compaction absorbed the head) runs it in its own bracket.
  *
  * v1 scope: the head renders guidance + compartments + session facts through
- * the core renderers (`buildMagicContextSection`, `buildCompartmentBlock`);
- * project-memory blocks, aging (P1–P4 tiers) and the mural ride the full
- * `renderCompartmentInjection` pipeline and are deferred (scope ledger).
+ * the core renderers (`buildMagicContextSection`, `buildCompartmentBlock`),
+ * plus the project-memory block (rendered and cached exactly like the core
+ * injection pipeline, so `ctx_search` hard-filtering sees the same ids) and
+ * temporal date ranges resolved from the durable log (T042). v2 tier aging
+ * (P1–P4) and the mural ride the dreamer-maintained pipeline and remain a
+ * declared deferral (PARITY).
  */
 import { createHash, randomUUID } from "node:crypto";
-import { buildCompartmentBlock, getCompartments, getSessionFacts } from "@magic-context/core/features/magic-context/compartment-storage";
+import { buildCompartmentBlock, getCompartments, getSessionFacts, type Compartment, type CompartmentDateRanges } from "@magic-context/core/features/magic-context/compartment-storage";
 import { buildMagicContextSection } from "@magic-context/core/agents/magic-context-prompt";
 import { updateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
+import { renderMemoryBlock, trimMemoriesToBudget } from "@magic-context/core/hooks/magic-context/inject-compartments";
+import { formatDate } from "@magic-context/core/hooks/magic-context/temporal-awareness";
+import { getMemoriesByProject } from "@magic-context/core/features/magic-context/memory/storage-memory";
+import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import type { ManagedEdits, ShadowInfo } from "./managed-edits.js";
 import type { DshSession } from "../host.js";
+import type { DshLogProjection } from "./dsh-session-log.js";
 import type { McReplacementContent } from "./events.js";
 
 export interface HeadRenderContext {
@@ -38,6 +46,8 @@ export interface HeadRenderContext {
 	readonly subagent: boolean;
 	/** A managed change already landed this pass ⇒ the head must exist to carry guidance. */
 	readonly managedChangeLanded?: boolean;
+	/** Current durable-log projection; temporal ranges resolve their dates from it. */
+	readonly projection: DshLogProjection;
 }
 
 interface HeadState {
@@ -52,6 +62,7 @@ export class HeadManager {
 		private readonly db: ContextDatabase,
 		private readonly managedEdits: ManagedEdits,
 		private readonly config: MagicContextConfig,
+		private readonly projectDir: string,
 	) {}
 
 	/** The cached head node for a session (durable seq + rendered bytes). */
@@ -79,8 +90,58 @@ export class HeadManager {
 			undefined,
 			this.config.smart_notes?.enabled ?? false,
 		);
-		const block = buildCompartmentBlock(getCompartments(this.db, context.mcSession), getSessionFacts(this.db, context.mcSession));
+		const compartments = getCompartments(this.db, context.mcSession);
+		const memoryBlock = this.renderMemorySection(context);
+		const dateRanges = this.temporalRanges(context, compartments);
+		const block = buildCompartmentBlock(compartments, getSessionFacts(this.db, context.mcSession), memoryBlock, dateRanges);
 		return block.length > 0 ? `${guidance}\n\n<session-history>\n${block}\n</session-history>` : guidance;
+	}
+
+	/**
+	 * The `<project-memory>` block, rendered and cached exactly like the core
+	 * injection pipeline: the session_meta cache row keeps the bytes stable
+	 * across background memory changes (no provider-prefix bust), and the
+	 * rendered-id capture is what `ctx_search` uses to hard-filter memories
+	 * the agent already sees.
+	 */
+	private renderMemorySection(context: HeadRenderContext): string | undefined {
+		if (!(this.config.memory?.enabled ?? true)) return undefined;
+		const projectPath = resolveProjectIdentityForSession(this.projectDir);
+		if (!projectPath) return undefined;
+		const cached = this.db
+			.prepare("SELECT memory_block_cache, memory_block_count FROM session_meta WHERE session_id = ?")
+			.get(context.mcSession) as { memory_block_cache: string; memory_block_count: number } | null;
+		if (cached?.memory_block_cache) return cached.memory_block_cache;
+		let memories = getMemoriesByProject(this.db, projectPath, ["active", "permanent"]);
+		const budget = this.config.memory?.injection_budget_tokens;
+		if (budget && memories.length > 0) memories = trimMemoriesToBudget(context.mcSession, memories, budget);
+		const memoryBlock = renderMemoryBlock(memories) ?? undefined;
+		// Snapshot the render (SQLITE_BUSY swallow mirrors the core pipeline:
+		// a one-pass cache miss beats failing the pass over a pure optimization).
+		try {
+			this.db
+				.prepare("UPDATE session_meta SET memory_block_cache = ?, memory_block_count = ?, memory_block_ids = ? WHERE session_id = ?")
+				.run(memoryBlock ?? "", memories.length, JSON.stringify(memories.map((memory) => memory.id)), context.mcSession);
+		} catch {
+			// Cache write is best effort; the block itself is returned regardless.
+		}
+		return memoryBlock;
+	}
+
+	/** Compartment date ranges from the durable log's own message timestamps. */
+	private temporalRanges(context: HeadRenderContext, compartments: readonly Compartment[]): CompartmentDateRanges | undefined {
+		if (!this.config.temporal_awareness || compartments.length === 0) return undefined;
+		const times = new Map<string, number>();
+		for (const record of context.projection.records) {
+			if (record.createdAt !== undefined) times.set(record.messageId, record.createdAt);
+		}
+		const byId = new Map<number, { start: string; end: string }>();
+		for (const compartment of compartments) {
+			const startMs = compartment.startMessageId !== undefined ? times.get(compartment.startMessageId) : undefined;
+			const endMs = compartment.endMessageId !== undefined ? times.get(compartment.endMessageId) : undefined;
+			if (startMs !== undefined && endMs !== undefined) byId.set(compartment.id, { start: formatDate(startMs), end: formatDate(endMs) });
+		}
+		return byId.size > 0 ? { byId } : undefined;
 	}
 
 	/**
@@ -107,7 +168,7 @@ export class HeadManager {
 	}
 
 	private hasAnythingToSay(context: HeadRenderContext): boolean {
-		return context.managedChangeLanded === true || getCompartments(this.db, context.mcSession).length > 0;
+		return context.managedChangeLanded === true || getCompartments(this.db, context.mcSession).length > 0 || this.renderMemorySection(context) !== undefined;
 	}
 
 	private async publish(session: DshSession, context: HeadRenderContext, text: string, cached: HeadState | undefined, coveredSeqs?: readonly number[]): Promise<ShadowInfo> {
