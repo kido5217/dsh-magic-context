@@ -8,9 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "bun scripts/check-bun.mjs && bun run --cwd packages/plugin build && bun run --cwd packages/pi-plugin build && bun run --cwd packages/cli build",
-    "typecheck": "bun run --cwd packages/plugin typecheck && bun run --cwd packages/pi-plugin typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/retina-local-fs typecheck",
-    "test": "bun scripts/check-bun.mjs && bun run --cwd packages/plugin test && bun run --cwd packages/pi-plugin test && bun run --cwd packages/cli test && bun run --cwd packages/retina-local-fs test",
+    "build": "bun scripts/check-bun.mjs && bun run --cwd packages/plugin build && bun run --cwd packages/pi-plugin build && bun run --cwd packages/cli build && bun run --cwd packages/dsh-plugin build",
+    "typecheck": "bun run --cwd packages/plugin typecheck && bun run --cwd packages/pi-plugin typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/retina-local-fs typecheck && bun run --cwd packages/dsh-plugin typecheck",
+    "test": "bun scripts/check-bun.mjs && bun run --cwd packages/plugin test && bun run --cwd packages/pi-plugin test && bun run --cwd packages/cli test && bun run --cwd packages/retina-local-fs test && bun run --cwd packages/dsh-plugin test",
     "test:e2e": "bun run --cwd packages/e2e-tests test",
     "test:e2e-opencode2": "bun run --cwd packages/e2e-tests test:opencode2",
     "test:rust-e2e": "bun run --cwd packages/e2e-tests test:rust-e2e",
