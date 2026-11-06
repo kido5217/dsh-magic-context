@@ -115,7 +115,9 @@ function resolveUserConfigDirectory(options: CreatePromptSurfaceRuntimeOptions):
     const shared = detectConfigFile(sharedBase);
     if (shared.format !== "none") return dirname(shared.path);
 
-    if (options.harness) {
+    // DSH joined the harness set after the CortexKit config location became the
+    // single shared path, so it owns no legacy config sources to fall back to.
+    if (options.harness && options.harness !== "dsh") {
         const legacy = resolveLegacyConfigSourcesForHarness(
             options.directory ?? process.cwd(),
             options.harness === "omp"
