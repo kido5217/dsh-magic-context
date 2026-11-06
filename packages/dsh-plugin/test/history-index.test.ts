@@ -76,8 +76,9 @@ describe("pass-fed message-history index (T045)", () => {
 			.all("s-hist") as Array<{ ordinal: number; role: string; content: string }>;
 		expect(rows.map((row) => row.role)).toEqual(["user", "assistant", "user", "assistant"]);
 		expect(rows[3]!.content).toContain("kestrel");
-		// Projection-position ordinals: stable 1..n positions, the same domain
-		// the compartment-boundary cutoff uses.
+		// Projection-position ordinals: 1..n positions of this snapshot. Not
+		// comparable to compartment boundaries (durable seqs) — the search
+		// lane gates DSH sessions by live visibility instead (see T046).
 		expect(rows.map((row) => row.ordinal)).toEqual([1, 2, 3, 4]);
 
 		// A later pass with new messages indexes only the new ones.

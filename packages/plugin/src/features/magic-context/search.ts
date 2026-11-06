@@ -173,6 +173,15 @@ export interface UnifiedSearchOptions {
     isEmbeddingRuntimeEnabled?: () => boolean;
     /** Only return message-history hits with ordinal ≤ this value (e.g. last compartment end). -1 or omit to search all. */
     maxMessageOrdinal?: number;
+    /**
+     * Live-visibility gate for harnesses whose stored message ordinals are
+     * stale after the host shrinks its visible history (DSH folds renumber
+     * projection positions, so no ordinal cutoff can name the live tail).
+     * Callers pass -1 for maxMessageOrdinal and let this predicate suppress
+     * every hit whose message is still visible in context; suppressed hits
+     * count toward the live-tail diagnostic like cutoff-suppressed ones.
+     */
+    liveMessageGate?: (messageId: string) => boolean;
     /** Include indexed git commits in the result set. Default false — the
      *  feature is gated behind experimental.git_commit_indexing config. */
     gitCommitsEnabled?: boolean;
@@ -2455,6 +2464,15 @@ export async function unifiedSearch(
         messageResults = outcome.results.filter(
             (result) => result.messageId !== options.excludeMessageId,
         );
+        if (options.liveMessageGate) {
+            const gate = options.liveMessageGate;
+            const eligible = messageResults.filter((result) => !gate(result.messageId));
+            if (options.diagnostics) {
+                options.diagnostics.suppressedLiveMessageMatches +=
+                    messageResults.length - eligible.length;
+            }
+            messageResults = eligible;
+        }
         if (lanes) lanes.message_fts = (outcome.laneResults ?? outcome.results).slice(0, 25);
         if (timings) timings.messageMs = performance.now() - stepStartedAt;
         recordAutoSearchLane(

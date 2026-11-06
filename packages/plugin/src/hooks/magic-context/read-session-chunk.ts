@@ -232,6 +232,23 @@ export function rawMessageWorkerSource(sessionId: string): RawMessageWorkerSourc
     return sessionProviders.get(sessionId)?.provider.workerSource;
 }
 
+/**
+ * Whether a message is currently VISIBLE on the session's provider surface —
+ * the provider reads live, so this answers "still in the model's context".
+ * Harnesses whose projection can shrink (DSH folds shadow nodes out) gate
+ * history search with this instead of an ordinal cutoff, because their stored
+ * ordinals are stale snapshot positions that a fold renumbers. Undefined
+ * when no provider claims the session.
+ */
+export function getRawMessageVisibility(
+    sessionId: string,
+): ((messageId: string) => boolean) | undefined {
+    const provider = sessionProviders.get(sessionId)?.provider;
+    if (!provider) return undefined;
+    if (provider.hasMessageById) return (messageId) => provider.hasMessageById!(messageId);
+    return (messageId) => provider.readMessages().some((message) => message.id === messageId);
+}
+
 export function rawMessageOffThreadRangeReader(
     sessionId: string,
 ): RawMessageProvider["readMessageIdOrdinalsForRangeOffThread"] {
