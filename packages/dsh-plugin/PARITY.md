@@ -99,7 +99,18 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
   `message-index-async.ts` pipeline needs a message-committed hook; DSH has none, so the
   pass feeds it instead: after each pass projects the log, the adapter reconciles the
   projected messages (append-only revision = projected length) and incrementally schedules
-  every newly projected message. `ctx_search`'s history lane answers on DSH sessions with
-  durable seqs as the coordinate; the rows carry `harness='dsh'`.
+  every newly projected message. `ctx_search`'s history lane answers on DSH sessions; the
+  rows carry `harness='dsh'`. The two coordinate systems are distinct: FTS rows store
+  projection-position ordinals (renumbered by folds), while compartments store durable
+  surface seqs — which is why the lane gates by visibility, not by boundary (next bullet).
+- **History-lane boundary gate is visibility-based on DSH (T046).** Core gates the raw
+  history lane with `message_ordinal ≤ lastCompartmentEnd`, sound where ordinals and
+  boundaries share one domain (OpenCode's message list). On DSH the stored ordinals are
+  stale snapshot positions once a fold shadows messages out, so no cutoff value names the
+  live tail. The wrapper instead searches all indexed messages and passes core's
+  `liveMessageGate`, which suppresses hits whose message id is still on the session
+  surface (the same intent issue #131 protects). Consequence: the "already in your
+  context" note fires from live-visibility suppression; on other harnesses it still
+  counts cutoff-suppressed rows.
 - Local token estimation: DSH ships a token meter that prices routed models; MC reads the
   meter instead of re-tokenizing (same thresholds — no config divergence).

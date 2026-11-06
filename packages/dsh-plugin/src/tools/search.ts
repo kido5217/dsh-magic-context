@@ -33,6 +33,7 @@ import {
 } from "@magic-context/core/features/magic-context/search";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage";
 import { getVisibleMemoryIds } from "@magic-context/core/hooks/magic-context/inject-compartments";
+import { getRawMessageVisibility } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import { CTX_SEARCH_DESCRIPTION } from "@magic-context/core/tools/ctx-search/constants";
 import {
 	parseSearchDateRange,
@@ -156,16 +157,19 @@ export function createCtxSearchTool(
 			const gitCommitsEnabled =
 				snapshot?.gitCommitEnabled ?? deps.gitCommitsEnabled ?? false;
 
-			// Only search message history up to the last compartment boundary —
-			// anything after that (the live tail) is still in context. With no
-			// compartment yet the boundary is 0: every 1-based indexed ordinal is
-			// live-tail and must be excluded (issue #131 parity).
-			const lastCompartmentEnd = getLastCompartmentEndMessage(
-				deps.db,
-				sessionId,
-			);
+			// Only search history the agent can no longer see (issue #131
+			// intent). The durable compartment boundary lives in surface-seq
+			// space while the DSH index stores projection-position ordinals,
+			// renumbered by every fold — no cutoff value gates that domain
+			// (T046). The session's provider answers visibility per durable
+			// message id instead, so search everything and let the gate
+			// suppress what is still on the surface. Unmanaged sessions keep
+			// the boundary cutoff: over-inclusive, but never leaks a sentinel.
+			const messageVisibility = getRawMessageVisibility(sessionId);
 			const messageOrdinalCutoff =
-				lastCompartmentEnd >= 0 ? lastCompartmentEnd : 0;
+				messageVisibility !== undefined
+					? -1
+					: Math.max(0, getLastCompartmentEndMessage(deps.db, sessionId));
 
 			// Hard-filter memories already rendered in <session-history>.
 			const visibleMemoryIds = getVisibleMemoryIds(deps.db, sessionId);
@@ -219,6 +223,7 @@ export function createCtxSearchTool(
 					},
 					isEmbeddingRuntimeEnabled: () => embeddingEnabled === true,
 					maxMessageOrdinal: messageOrdinalCutoff,
+					liveMessageGate: messageVisibility,
 					gitCommitsEnabled,
 					sources:
 						params.sources && params.sources.length > 0
