@@ -38,6 +38,7 @@ import type { CompactionClaimRegistry } from "../compaction-claim.js";
 import type { PressureMeter } from "./meter.js";
 import type { SessionMapping } from "../sessions/mapping.js";
 import { rulesForRole, type McRoleRules } from "../sessions/subagent-rules.js";
+import { indexDshSessionHistory } from "../sessions/history-index.js";
 import { projectDshSessionLog, registerDshRawHistoryProvider, isAdapterSurfaceId, type DshLogProjection, type DshSessionLogReader } from "../surface/dsh-session-log.js";
 import { protectedTailBudget, DropApplier } from "../surface/apply-operations.js";
 import type { HeadManager } from "../surface/head.js";
@@ -85,7 +86,7 @@ export class PressureLanes {
 		let state = this.attachedSessions.get(info.sessionId);
 		try {
 			if (state === undefined) state = this.attach(session);
-			return await this.runPass(session, state);
+			return await this.runPass(session, state, info);
 		} catch (error) {
 			// FR-004: management failed (store busy/unavailable/closed) ⇒ refuse.
 			// Never send an unmanaged request.
@@ -118,13 +119,22 @@ export class PressureLanes {
 		return this.deps.readSessionLog(dshSessionId) ?? [];
 	}
 
-	private async runPass(session: DshSession, state: AttachedSession): Promise<PreStepDecision> {
+	private async runPass(session: DshSession, state: AttachedSession, info: PreStepInfo): Promise<PreStepDecision> {
 		const lane = this.deps.meter.lane(session.id); // fresh EVERY pass
 		const reading = this.deps.host.pressure(session.id);
 		const projection = projectDshSessionLog(this.readRecords(session.id));
 		this.tagProjectedMessages(state.mcSession, projection);
+		indexDshSessionHistory(this.deps.db, state.mcSession, projection);
+		// Host fact (0.2.2-rc.1, observed live): on the very first step of a fresh
+		// session the pre-step fires before the host appends the first
+		// system/message, so a plugin surface append here would sit above the
+		// protected first surface head and the reopen validator would reject the
+		// log ("system/message requires a protected first surface head"). Bookkeeping
+		// (tags, history index) above is not surface-visible and stays; every managed
+		// write defers to the next step, where the host head exists.
+		if (info.turn === 1 && info.step === 1 && session.surfaceNodes().length === 0) return "enter";
 		const budget = protectedTailBudget(this.deps.config, reading?.contextWindow, lane === "force" || lane === "refuse");
-		const headContext = { mcSession: state.mcSession, subagent: state.rules.role === "subagent" };
+		const headContext = { mcSession: state.mcSession, subagent: state.rules.role === "subagent", projection };
 
 		if (lane === "force" || lane === "refuse") {
 			const fold = await this.deps.historian.fold({ session, mcSession: state.mcSession, projection, rules: state.rules, subagent: headContext.subagent, protectedTailTokens: budget });
@@ -166,10 +176,15 @@ export class PressureLanes {
 	private async refuse(session: DshSession, sessionId: string, cause?: string): Promise<PreStepDecision> {
 		const episodeOpen = this.refusalEpisode.has(sessionId);
 		this.refusalEpisode.add(sessionId);
+		const band = this.deps.host.pressure(sessionId);
+		log(`[dsh-magic-context] refusing step for ${sessionId}: band ${band?.pressureTokens ?? "?"}/${band?.contextWindow ?? "?"}${cause !== undefined ? ` (management error: ${cause})` : ""}`);
 		if (!episodeOpen) {
 			const text = cause === undefined ? REFUSAL_NOTICE : `${REFUSAL_NOTICE}\n\nThis refusal was fail-closed after a management error (${cause}); the context band itself may be lower than described above. See the magic-context log for detail.`;
 			try {
-				await session.appendNotice([{ type: "text", text }]);
+				// Empty surface ⇒ the host's first system/message is not logged yet
+				// (first step of a fresh session); a notice now would precede the
+				// protected first surface head and corrupt the log on reopen.
+				if (session.surfaceNodes().length > 0) await session.appendNotice([{ type: "text", text }]);
 			} catch (error) {
 				log(`[dsh-magic-context] refusal notice could not be appended for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
 			}
