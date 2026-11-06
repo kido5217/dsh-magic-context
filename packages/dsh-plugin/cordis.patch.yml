@@ -1,0 +1,6 @@
+# Cordis bundle patch — how DSH loads Magic Context.
+# Inserts this package's plugin row into the base composition; the id is stable so a
+# downstream profile can reconfigure or disable it by id.
+- insert:
+    - id: dsh-magic-context
+      name: "@cortexkit/dsh-magic-context"
