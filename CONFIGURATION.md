@@ -1,6 +1,6 @@
 # Configuration Reference
 
-`magic-context.jsonc` has shared top-level settings plus harness-specific model execution blocks. The schema is shared by the OpenCode plugin and the Pi-compatible extension used on both Pi and OMP.
+`magic-context.jsonc` has shared top-level settings plus harness-specific model execution blocks. The schema is shared by the OpenCode plugin and the Pi-compatible extension used on both Pi and OMP. The DSH plugin reads the same file and schema and adds **no DSH-only settings**. Where a block selects a model per harness (`historian.opencode` / `.pi` / `.omp`, `dreamer.*`), the DSH summarizer instead runs through the DSH host's own routed model — the host owns routing for its plugin's auxiliary calls, so no `historian.dsh` block is needed (or accepted); pressure thresholds, scheduler, protected tags, memory, and all other settings apply identically on DSH.
 
 ### Configuration locations
 

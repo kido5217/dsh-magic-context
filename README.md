@@ -135,6 +135,8 @@ User-level config is `~/.config/cortexkit/magic-context.jsonc` on macOS/Linux an
 
 **Oh My Pi (OMP):** `npx @cortexkit/magic-context@latest setup --harness omp` (requires OMP `>= 17.1.7`). Setup installs the Pi-compatible extension through `omp plugin`, disables OMP native compaction and automatic memory, and honors OMP profiles, `PI_CODING_AGENT_DIR`, and initialized XDG layouts.
 
+**DSH (DeepSeek Harness):** install the `@cortexkit/dsh-magic-context` plugin bundle into your DSH profile (via the Plugins page, or by adding it to the profile's `bundles` list; requires DSH `>= 0.2.2-rc.1 < 0.3`). The adapter shares the same database as the other harnesses; project memories, history, and embeddings pool across all of them. Magic Context claims compaction for the sessions it manages — turn off the profile's default compaction backend (disable the `compaction-basic` row) so the two never double-shadow a session. See `packages/dsh-plugin/README.md` and its `PARITY.md` for the DSH-side details.
+
 **Troubleshooting:** `npx @cortexkit/magic-context@latest doctor` auto-detects your harnesses, checks host-specific conflicts, verifies plugin registration and database integrity, and fixes what it can. Add `--issue` to file a ready-to-submit bug report.
 
 Works the same on a brand-new or a long-running project: install, restart the harness, and Magic Context captures context from that point forward. It does not backfill OpenCode, Pi, or OMP sessions from before it was installed.
