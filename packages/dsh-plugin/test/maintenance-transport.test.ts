@@ -181,3 +181,174 @@ describe("single-shot transport", () => {
 		expect(after.text).toBeNull();
 	});
 });
+
+import type { HiddenRunIdentity } from "@magic-context/core/hooks/magic-context/compartment-runner-types";
+import type {
+	MaintenanceAgentHandle,
+	MaintenanceAgentRuntime,
+	MaintenanceStepDecision,
+} from "../src/maintenance/transport-agent.js";
+// ---------------------------------------------------------------------------
+// T055/T064 — the hidden-agent transport over a faked maintenance runtime.
+// ---------------------------------------------------------------------------
+import { DshHiddenAgentTransport } from "../src/maintenance/transport-agent.js";
+
+interface FakeAgent extends MaintenanceAgentHandle {
+	promptText: string | undefined;
+	promptModel: { provider: string; model: string } | undefined;
+	cancelled: number;
+	disposed: number;
+	spec: Parameters<MaintenanceAgentRuntime["launch"]>[0];
+	settle: (() => void) | undefined;
+	fail: Error | undefined;
+}
+
+function fakeRuntime(behavior: (agent: FakeAgent) => void = () => {}): {
+	runtime: MaintenanceAgentRuntime;
+	agents: FakeAgent[];
+	last: () => FakeAgent;
+} {
+	const agents: FakeAgent[] = [];
+	const runtime: MaintenanceAgentRuntime = {
+		async launch(spec) {
+			const agent: FakeAgent = {
+				promptText: undefined,
+				promptModel: undefined,
+				cancelled: 0,
+				disposed: 0,
+				spec,
+				settle: undefined,
+				fail: undefined,
+				async prompt(text, model) {
+					agent.promptText = text;
+					agent.promptModel = model;
+					if (agent.fail !== undefined) throw agent.fail;
+					await new Promise<void>((done) => {
+						agent.settle = done;
+						behavior(agent);
+					});
+				},
+				cancel() {
+					agent.cancelled += 1;
+					agent.settle?.();
+				},
+				async lastAssistant() {
+					return "<manifest/>";
+				},
+				async dispose() {
+					agent.disposed += 1;
+				},
+			};
+			agents.push(agent);
+			return agent;
+		},
+	};
+	return { runtime, agents, last: () => agents[agents.length - 1]! };
+}
+
+const identity = (over: Partial<HiddenRunIdentity> = {}): HiddenRunIdentity =>
+	({
+		agent: "magic-context",
+		kind: "dreamer-task",
+		system: "SYS",
+		timeoutMs: 5_000,
+		title: "t",
+		directory: "/tmp/project",
+		...over,
+	}) as unknown as HiddenRunIdentity;
+
+const agentAttempt = {
+	path: { id: "x" },
+	body: {
+		model: { providerID: "mock", modelID: "mock-model" },
+		parts: [{ type: "text", text: "do the loop" }],
+	},
+};
+
+describe("hidden-agent transport", () => {
+	test("runs the loop, collects the settlement, disposes the session", async () => {
+		const { runtime, last } = fakeRuntime((agent) => {
+			agent.spec.onUsage({ input: 40, output: 10 });
+			agent.settle?.(); // no further steps; settle immediately
+		});
+		const transport = new DshHiddenAgentTransport(runtime);
+		const handle = await transport.open(identity());
+		expect(handle.id.startsWith("session-mc-maint-")).toBe(true);
+		await transport.attempt(handle, agentAttempt);
+		const completion = await transport.collect(handle);
+		expect(completion.text).toBe("<manifest/>");
+		expect(completion.usage).toMatchObject({ input: 40, output: 10 });
+		const agent = last();
+		expect(agent.promptText).toContain("do the loop");
+		expect(agent.promptModel).toEqual({
+			provider: "mock",
+			model: "mock-model",
+		});
+		await transport.close(handle, {
+			promptSettled: true,
+			privacySensitive: true,
+			context: "test",
+			log: () => {},
+		});
+		expect(agent.disposed).toBe(1);
+	});
+
+	test("the step cap refuses late steps and the token budget wraps up", async () => {
+		const decisions: MaintenanceStepDecision[] = [];
+		const { runtime } = fakeRuntime((agent) => {
+			agent.spec.onUsage({ input: 0, output: 999_000 });
+			for (let step = 1; step <= 30; step += 1)
+				decisions.push(agent.spec.onStep(step));
+			agent.settle?.();
+		});
+		const transport = new DshHiddenAgentTransport(runtime, {
+			maxSteps: 24,
+			maxRunTokens: 1000,
+		});
+		const handle = await transport.open(identity());
+		await transport.attempt(handle, agentAttempt);
+		// Over the cap: refused regardless of budget; under it with an spent
+		// budget: wrap-up; step 1 before any usage: run.
+		expect(decisions[0]).toBe("wrap-up"); // budget already spent at step 1
+		expect(decisions[23]).toBe("wrap-up"); // step 24: capped only at >max
+		expect(decisions[24]).toBe("refuse");
+		expect(decisions[29]).toBe("refuse");
+		await transport.close(handle, {
+			promptSettled: true,
+			privacySensitive: true,
+			context: "test",
+			log: () => {},
+		});
+	});
+
+	test("the deadline cancels the agent and fails the attempt", async () => {
+		const { runtime, last } = fakeRuntime();
+		const transport = new DshHiddenAgentTransport(runtime);
+		const handle = await transport.open(identity({ timeoutMs: 20 }));
+		const started = transport.attempt(handle, agentAttempt);
+		await expect(started).rejects.toThrow("deadline");
+		expect(last().cancelled).toBe(1);
+	});
+
+	test("an abort (lease loss) cancels the agent mid-run", async () => {
+		const { runtime, last } = fakeRuntime();
+		const transport = new DshHiddenAgentTransport(runtime);
+		const handle = await transport.open(identity());
+		const controller = new AbortController();
+		const started = transport.attempt(handle, {
+			...agentAttempt,
+			signal: controller.signal,
+		});
+		await Bun.sleep(5);
+		controller.abort();
+		await expect(started).rejects.toThrow("cancelled");
+		expect(last().cancelled).toBe(1);
+		await transport.close(handle, {
+			promptSettled: false,
+			privacySensitive: true,
+			context: "test",
+			log: () => {},
+		});
+		expect(last().disposed).toBe(1);
+	});
+});
