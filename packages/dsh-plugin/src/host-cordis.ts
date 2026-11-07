@@ -272,12 +272,20 @@ export function createCordisSessionLogSource(ctx: Context): CordisSessionLogSour
 					.filter((block): block is { type: "text"; text: string } => block.type === "text")
 					.map((block) => block.text)
 					.join("\n");
+				const replayBlocks = (message.source as { replayState?: { blocks?: readonly { type: string; signature?: string }[] } })
+					.replayState?.blocks;
 				records.push({
 					seq: Number(event.seq),
 					messageId: String(message.id),
 					role: message.role,
 					text,
 					createdAt: event.time,
+					blocks: message.content,
+					...(message.role === "tool" ? { toolCallId: String(message.toolCallId) } : {}),
+					...(replayBlocks?.some((block) => block.type === "reasoning" && typeof block.signature === "string")
+						? { reasoningSigned: true }
+						: {}),
+					...(message.role === "tool" && message.isError === true ? { isError: true } : {}),
 				});
 			}
 			cache.set(dshSessionId, records);

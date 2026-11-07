@@ -141,7 +141,12 @@ export function mountAdapter(host: DshHost, config: MagicContextConfig, db: Cont
 	registerEffect("ctx-tools", () => {
 		const disposeTools = registerMagicContextToolsDsh(host, {
 			db,
-			sessionId: opts.sessionId ?? (() => mapping.lastAttached() ?? ""),
+			// T018: tools resolve the calling agent per call; there is no
+			// last-attached fallback in production. A call outside an agent turn
+			// is a contract violation, not a guess.
+			sessionId: () => {
+				throw new Error("ctx_* tool invoked outside an agent turn: no calling agent");
+			},
 			projectDir: opts.projectDir ?? process.cwd(),
 			protectedTags: config.protected_tags ?? 20,
 			rerankConnectionFile: config.subc?.connection_file,

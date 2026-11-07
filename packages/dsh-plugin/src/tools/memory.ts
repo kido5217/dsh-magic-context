@@ -19,6 +19,7 @@ import {
 	defineTool,
 	type ParameterSchemaSpec,
 	type ToolDefinition,
+	type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
 import {
 	archiveMemory,
@@ -67,7 +68,7 @@ const GET_MAX_IDS = 20;
 
 export interface CtxMemoryToolDshDeps {
 	db: ContextDatabase;
-	sessionId: () => string;
+	sessionId: (exec?: ToolRunContext) => string;
 	projectDir: string;
 	/** Used only when the project has no embedding registration (no snapshot). */
 	memoryEnabled?: boolean;
@@ -117,7 +118,7 @@ export function createCtxMemoryTool(
 		),
 		parameters,
 		output: stringToolOutput(),
-		async execute(rawArgs) {
+		async execute(rawArgs, exec) {
 			const params = unwrapImitatedReducedArgs(
 				rawArgs as Record<string, unknown>,
 				["action"],
@@ -154,7 +155,7 @@ export function createCtxMemoryTool(
 						"Cross-session memory is disabled for this project.",
 				);
 			}
-			const sessionId = deps.sessionId();
+			const sessionId = deps.sessionId(exec);
 
 			// Single identity on this lane: read visibility and write ownership
 			// both reduce to the project-identity check.

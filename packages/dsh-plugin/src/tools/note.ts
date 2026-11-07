@@ -19,6 +19,7 @@ import {
 	defineTool,
 	type ParameterSchemaSpec,
 	type ToolDefinition,
+	type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import { getLastIndexedOrdinal } from "@magic-context/core/features/magic-context/message-index";
@@ -84,7 +85,7 @@ const DISMISS_FOOTER =
 
 export interface CtxNoteToolDshDeps {
 	db: ContextDatabase;
-	sessionId: () => string;
+	sessionId: (exec?: ToolRunContext) => string;
 	/** Registration-time project directory; identity resolves per call. */
 	projectDir: string;
 	smartNotesEnabled?: boolean;
@@ -153,7 +154,7 @@ export function createCtxNoteTool(deps: CtxNoteToolDshDeps): ToolDefinition {
 		),
 		parameters,
 		output: stringToolOutput(),
-		async execute(rawArgs) {
+		async execute(rawArgs, exec) {
 			const params = unwrapImitatedReducedArgs(
 				rawArgs as Record<string, unknown>,
 				["action", "content"],
@@ -184,7 +185,7 @@ export function createCtxNoteTool(deps: CtxNoteToolDshDeps): ToolDefinition {
 			) {
 				throw new Error(SMART_NOTES_DISABLED_REPLY);
 			}
-			const sessionId = deps.sessionId();
+			const sessionId = deps.sessionId(exec);
 			const dreamerEnabled = deps.dreamerEnabled;
 			// Infer write only on NON-EMPTY content: required-field providers
 			// fill every optional param, so a bare typeof check mis-infers write.

@@ -19,6 +19,7 @@
  * core's `setRawMessageProvider(sessionId, provider)` for the session's
  * managed lifetime; the returned disposer unregisters.
  */
+import type { ContentBlock } from "@deepseek-ai/dsh-llm/types";
 import type { RawMessageProvider } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import { setRawMessageProvider } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import type { RawMessage, RawMessageParts } from "@magic-context/core/hooks/magic-context/read-session-raw";
@@ -33,6 +34,19 @@ export interface DshLogMessageRecord {
 	/** Concatenated text content of the message's content blocks. */
 	readonly text: string;
 	readonly createdAt?: number;
+	/**
+	 * Full provider-neutral content blocks, preserving reasoning, tool calls and
+	 * image/file references. Optional so narrow doubles can project text only;
+	 * production always fills it. Lane code must treat an absent value as
+	 * text-only rather than reconstructing structure from `text`.
+	 */
+	readonly blocks?: readonly ContentBlock[];
+	/** Tool call this message answers (`role === "tool"`). */
+	readonly toolCallId?: string;
+	/** True when a reasoning block carries a provider replay signature. */
+	readonly reasoningSigned?: boolean;
+	/** Tool failure marker for tool-result messages. */
+	readonly isError?: boolean;
 }
 
 /** Host seam: read the current surface-visible message records of a session. */

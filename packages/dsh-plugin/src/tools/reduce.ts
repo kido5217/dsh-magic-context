@@ -12,6 +12,7 @@ import {
 	defineTool,
 	type ParameterSchemaSpec,
 	type ToolDefinition,
+	type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
 import { parseRangeString } from "@magic-context/core/features/magic-context/range-parser";
 import {
@@ -39,7 +40,7 @@ import {
 export interface CtxReduceToolDshDeps {
 	db: ContextDatabase;
 	/** Resolved at call time: drops are written against the CURRENT session. */
-	sessionId: () => string;
+	sessionId: (exec?: ToolRunContext) => string;
 	/** Kept for surface parity with Pi; enforcement lives in the core release pass. */
 	protectedTags?: number;
 	surface: ToolSurface;
@@ -65,13 +66,13 @@ export function createCtxReduceTool(
 		),
 		parameters,
 		output: stringToolOutput(),
-		async execute(rawArgs) {
+		async execute(rawArgs, exec) {
 			const params = unwrapImitatedReducedArgs(
 				rawArgs as Record<string, unknown>,
 				["drop"],
 				{ drop: "string" },
 			) as { drop?: string };
-			const sessionId = deps.sessionId();
+			const sessionId = deps.sessionId(exec);
 
 			if (!params.drop) {
 				throw new Error(
