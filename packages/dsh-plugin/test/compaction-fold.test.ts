@@ -13,7 +13,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { ManualCompactAgentContext } from "@deepseek-ai/dsh-compaction";
 import { ManualCompactionError } from "@deepseek-ai/dsh-compaction";
-import { getCompartments } from "@magic-context/core/features/magic-context/compartment-storage";
+import {
+	getCompartments,
+	getSessionFacts,
+	replaceAllCompartmentState,
+} from "@magic-context/core/features/magic-context/compartment-storage";
 import {
 	type ContextDatabase,
 	closeDatabase,
@@ -212,6 +216,78 @@ describe("manual compaction fold (T072/T073)", () => {
 		expect(declined).toContain("already running");
 		expect(fake.replacements.length).toBeGreaterThanOrEqual(1);
 		handle.compaction.endFold("s-compact-busy");
+		await handle.dispose();
+	});
+
+	// N-11 (and the census TL-07 proof): `/ctx-recomp` wipes the published
+	// compartments BEFORE the rebuild fold, and a failed rebuild — null fold
+	// (no usable window/route) or a throwing aux call — must restore them.
+	const publishOne = (sessionId: string) => {
+		replaceAllCompartmentState(
+			db,
+			sessionId,
+			[
+				{
+					sequence: 1,
+					startMessage: 0,
+					endMessage: 3,
+					startMessageId: "m0",
+					endMessageId: "m3",
+					title: "published before rebuild",
+					content: "the knowledge that must survive a failed rebuild",
+				},
+			],
+			[{ category: "state", content: "fact-that-must-survive" }],
+		);
+	};
+
+	test("a full rebuild whose fold declines restores the wiped state (N-11)", async () => {
+		const host = new TestDshHost();
+		seedSession(host, "s-recomp-null", 10);
+		// No historian route: the fold can only ever decline with null.
+		const handle = us1Mount(host, db, { historianRoute: undefined });
+		await settle();
+		await host.firePreStep(stepFor("s-recomp-null"));
+		publishOne("s-recomp-null");
+		const text = await handle.lanes.manualFold("s-recomp-null", {
+			fullRebuild: true,
+		});
+		expect(text).toContain("Nothing to fold");
+		// The wipe rolled back: published knowledge and facts are intact.
+		expect(getCompartments(db, "s-recomp-null").map((c) => c.title)).toEqual([
+			"published before rebuild",
+		]);
+		expect(
+			getSessionFacts(db, "s-recomp-null").map((fact) => fact.content),
+		).toContain("fact-that-must-survive");
+		await handle.dispose();
+	});
+
+	test("a full rebuild whose aux call fails restores the wiped state (N-11)", async () => {
+		const host = new TestDshHost();
+		seedSession(host, "s-recomp-auxfail", 10);
+		const handle = us1Mount(host, db);
+		await settle();
+		await host.firePreStep(stepFor("s-recomp-auxfail"));
+		publishOne("s-recomp-auxfail");
+		host.llmResponder = () => {
+			throw new Error("aux down");
+		};
+		let text: string;
+		try {
+			text = await handle.lanes.manualFold("s-recomp-auxfail", {
+				fullRebuild: true,
+			});
+		} catch {
+			text = "fold threw";
+		}
+		// Whether the historian converts the failure to a null fold or lets
+		// it throw, the published state must come back; it must not be left
+		// wiped with the session silently knowledge-less.
+		expect(getCompartments(db, "s-recomp-auxfail").map((c) => c.title)).toEqual(
+			["published before rebuild"],
+		);
+		expect(typeof text).toBe("string");
 		await handle.dispose();
 	});
 
