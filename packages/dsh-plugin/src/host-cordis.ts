@@ -459,7 +459,11 @@ export function createCordisHost(
 								`[dsh-magic-context] session-log prefetch failed for ${sessionId}; refusing step fail-closed: ${error instanceof Error ? error.message : String(error)}`,
 							);
 							try {
-								getSession(sessionId)?.appendTail([
+								// Awaited: a floating promise here is the
+								// unhandled-rejection class DSH treats as
+								// process-fatal (N-08). The enclosing
+								// function is already async.
+								await getSession(sessionId)?.appendTail([
 									{
 										type: "text",
 										text: "Magic Context could not read the session log before this step and refused it (fail-closed): the pass never runs on an unverifiable history.",

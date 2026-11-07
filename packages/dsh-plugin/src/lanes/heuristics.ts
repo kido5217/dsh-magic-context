@@ -154,13 +154,32 @@ export interface DedupSelection {
 	readonly droppedInjections: number;
 }
 
-/** Run the core's dedup arm only (routine true, no emergency, no caveman). */
-export function selectDedup(context: LaneContext): DedupSelection {
+/**
+ * Run the core's dedup arm only (routine true, no emergency, no caveman).
+ *
+ * N-09: this WRITES tag state (retired duplicates, retired injections) and
+ * must therefore run inside a lane's decision, under the bracket — never in
+ * the pure `select`. Returns null when there is nothing to clean.
+ */
+export function selectDedup(context: LaneContext): DedupSelection | null {
 	const tags = getActiveTagsBySession(context.db, context.mcSession);
-	if (tags.length === 0) return { deduplicatedTools: 0, droppedInjections: 0 };
+	if (tags.length === 0) return null;
 	const { messages, tagNumbers } = dedupMessages(context);
-	if (messages.length === 0)
-		return { deduplicatedTools: 0, droppedInjections: 0 };
+	if (messages.length === 0) return null;
+	// N-09: the pass boundary's tail protection, in core coordinates. Tags
+	// whose message sits in the verbatim protected tail are pinned exactly,
+	// and the tag-number cutoff is the oldest protected tag — so a duplicate
+	// INSIDE the newest tail is not retired out from under the live turn
+	// (core passes this cutoff; DSH previously passed null).
+	const protectedTagNumbers = new Set<number>(
+		tags
+			.filter((tag) => context.protectedMessageIds.has(tag.messageId))
+			.map((tag) => tag.tagNumber),
+	);
+	const protectedCutoff =
+		protectedTagNumbers.size === 0
+			? null
+			: Math.min(...protectedTagNumbers);
 	const result = applyHeuristicCleanup(
 		context.mcSession,
 		context.db,
@@ -168,8 +187,8 @@ export function selectDedup(context: LaneContext): DedupSelection {
 		tagNumbers as unknown as Map<never, number>,
 		{
 			protectedTools: context.config.protected_tools,
-			protectedTagNumbers: new Set(),
-			protectedCutoff: null,
+			protectedTagNumbers,
+			protectedCutoff,
 			routine: true,
 		},
 		tags,
@@ -185,12 +204,16 @@ export const dedupLane: Lane = {
 	frequency: "routine",
 	changeKind: "drop",
 	select(context: LaneContext): LaneSelection {
-		const selection = selectDedup(context);
-		if (selection.deduplicatedTools === 0) return { requests: [] };
+		// Pure decision-input (N-09): the store write happens inside the
+		// decision, under the bracket, like every other lane. The gate is a
+		// read-only question — with no tagged content there is nothing the
+		// core cleanup could retire.
+		if (getActiveTagsBySession(context.db, context.mcSession).length === 0)
+			return { requests: [] };
 		return {
 			requests: [],
-			decision: async () => selection,
-			reason: `deduplicated ${String(selection.deduplicatedTools)} tool call(s)`,
+			decision: async () => selectDedup(context),
+			reason: "heuristic cleanup (duplicate tool calls, retired injections)",
 		};
 	},
 };

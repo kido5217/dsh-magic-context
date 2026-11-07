@@ -244,7 +244,7 @@ describe("dedup lane", () => {
 		).toEqual(["tool_use", "tool_use"]);
 
 		const selection = selectDedup(laneContext);
-		expect(selection.deduplicatedTools).toBe(1);
+		expect(selection?.deduplicatedTools).toBe(1);
 		// A dropped tag leaves the ACTIVE set: only the newer duplicate remains.
 		const toolTags = activeTags(db, "s-dedup").filter(
 			(tag) => tag.type === "tool",
