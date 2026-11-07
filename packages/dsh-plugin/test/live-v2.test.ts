@@ -10,11 +10,11 @@
  * session (a different session id than the parent, classified as a subagent),
  * and both agents must complete.
  *
- * SKIPPED: the child's tool-call path does not execute in the isolated headless
- * profile yet — the child makes exactly one request and ends, so it never
- * reaches a second step (and therefore never a fold). The unit-level behaviour
- * is covered by `test/us1-emergency.test.ts`; the live driver needs the child's
- * tool set understood. See `gate-evidence/v2-subagent-fold/README.md`.
+ * SKIPPED: the child spawns and makes exactly ONE request, then never reaches a
+ * second step — so its tool call is not producing a tool result that would give
+ * it a second pre-step (and therefore a fold). The unit-level behaviour is
+ * covered by `test/us1-emergency.test.ts`; the live driver needs the child's
+ * tool composition understood. See `gate-evidence/v2-subagent-fold/README.md`.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { createLiveHome, type LiveHome } from "./live-home.js";
@@ -32,7 +32,10 @@ afterAll(() => {
 	provider.stop();
 });
 
-const READ_TARGET = `${import.meta.dir}/us1-support.ts`;
+// The child must own MORE than the protected budget at the refuse band, or the
+// fold has nothing eligible and the step is refused instead (which is exactly
+// what a small fixture produced).
+const READ_TARGET = `${import.meta.dir}/../src/index.ts`;
 
 describe.skip("V2 live", () => {
 	test("a child at the refuse band takes one fold instead of a refusal", async () => {
