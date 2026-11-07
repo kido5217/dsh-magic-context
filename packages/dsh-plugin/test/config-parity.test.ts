@@ -68,6 +68,7 @@ const SCHEMA_READ_KEYS: readonly string[] = [
 	"execute_threshold_percentage",
 	"execute_threshold_percentage.default",
 	"execute_threshold_tokens",
+	"fail_closed_blocking",
 	"historian.expand_tools",
 	"historian.maxTokens",
 	"history_budget_percentage",
