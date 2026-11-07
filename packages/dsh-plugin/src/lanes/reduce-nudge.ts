@@ -22,7 +22,10 @@
 
 import { getActiveTagsBySession } from "@magic-context/core/features/magic-context/storage-tags";
 import {
+	buildChannel1Reminder,
 	buildChannel2Reminder,
+	type Channel1Level,
+	decideChannel1,
 	evaluateChannel2,
 } from "@magic-context/core/hooks/magic-context/ctx-reduce-nudge";
 import { estimateTokens } from "@magic-context/core/hooks/magic-context/read-session-formatting";
@@ -133,3 +136,102 @@ export const reduceNudgeLane: Lane = {
 		};
 	},
 };
+
+/**
+ * Channel 1 — the post-execute verdict (T033 second half).
+ *
+ * Channel 1 is the "your next step" nudge: it rides the tool result that the
+ * agent just produced, so the reminder lands exactly where the decision about
+ * that output is being made. On DSH that seam is `tools/post-execute`, whose
+ * `accept` decision can attach user-visible context for the next request —
+ * the durable analogue of the other harnesses' post-tool injection.
+ *
+ * The core decides WHEN (its growth/band/dampening state machine, including
+ * post-reduce grace); this module keeps the per-session memory the machine
+ * needs and turns its verdict into the core's own reminder copy.
+ */
+export interface Channel1State {
+	lastNudgeUndropped: number;
+	lastNudgeLevel: Channel1Level | "";
+	lastFireOrdinal: number;
+}
+
+export class Channel1Tracker {
+	private readonly states = new Map<string, Channel1State>();
+
+	read(sessionId: string): Channel1State {
+		const existing = this.states.get(sessionId);
+		if (existing !== undefined) return existing;
+		const created: Channel1State = {
+			lastNudgeUndropped: 0,
+			lastNudgeLevel: "",
+			lastFireOrdinal: 0,
+		};
+		this.states.set(sessionId, created);
+		return created;
+	}
+
+	/** A `ctx_reduce` call was observed: the next decision starts from grace. */
+	noteReduce(sessionId: string): void {
+		const state = this.read(sessionId);
+		state.lastNudgeUndropped = 0;
+		state.lastNudgeLevel = "";
+	}
+
+	detachAll(): void {
+		this.states.clear();
+	}
+}
+
+export interface Channel1Verdict {
+	readonly fire: boolean;
+	readonly text?: string;
+	readonly level: Channel1Level;
+	readonly reason: string;
+}
+
+/**
+ * Decide and render one channel-1 nudge. `hasRecentReduce` suppresses the
+ * nudge right after the agent already acted on it.
+ */
+export function decideChannel1For(
+	context: LaneContext,
+	tracker: Channel1Tracker,
+	hasRecentReduce: boolean,
+): Channel1Verdict {
+	const measurement = measureChannel2(context);
+	const state = tracker.read(context.mcSession);
+	const decision = decideChannel1({
+		baselineU: measurement.reclaimableTokens,
+		baselineT: measurement.tailTokens,
+		turnDeltaU: 0,
+		turnDeltaT: 0,
+		lastNudgeUndropped: state.lastNudgeUndropped,
+		lastNudgeLevel: state.lastNudgeLevel,
+		lastFireOrdinal: state.lastFireOrdinal,
+		hasRecentReduce,
+		agentDropsAppliedThisPass: false,
+	});
+	if (!decision.fire) {
+		return {
+			fire: false,
+			level: decision.level,
+			reason: decision.verdictReason,
+		};
+	}
+	state.lastNudgeUndropped = decision.nextLastNudge;
+	state.lastNudgeLevel = decision.nextLastNudgeLevel;
+	state.lastFireOrdinal += 1;
+	return {
+		fire: true,
+		level: decision.level,
+		reason: decision.verdictReason,
+		text: buildChannel1Reminder(
+			decision.level,
+			decision.undroppedTokens,
+			countReclaimable(context),
+			undefined,
+			decision.sticky,
+		).trim(),
+	};
+}

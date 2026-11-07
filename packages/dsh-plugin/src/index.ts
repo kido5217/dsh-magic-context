@@ -40,12 +40,14 @@ import {
 	createCordisHost,
 	createCordisSessionLogSource,
 } from "./host-cordis.js";
+import { rebuildPermission } from "./lanes/gating.js";
 import {
 	detectOverflowError,
 	OverflowLedger,
 	OverflowRecoveryGate,
 	recoverOverflow,
 } from "./lanes/overflow.js";
+import { Channel1Tracker, decideChannel1For } from "./lanes/reduce-nudge.js";
 import { PressureLanes } from "./pressure/lanes.js";
 import { PressureMeter } from "./pressure/meter.js";
 import { Historian, type HistorianRoute } from "./sessions/historian.js";
@@ -133,6 +135,49 @@ export function mountAdapter(
 	// T008 — session mapping (idempotent store upsert + role classification).
 	const mapping = new SessionMapping(db);
 	registerEffect("session-mapping", () => () => mapping.detachAll());
+
+	// T033 channel 1 — the post-execute `ctx_reduce` nudge. It rides the tool
+	// result the agent just produced, which is exactly where the decision about
+	// that output is made; the core's state machine decides when and the core's
+	// copy is what the model reads.
+	const channel1 = new Channel1Tracker();
+	registerEffect("reduce-nudge-channel1", () =>
+		host.onPostToolExecute((info) => {
+			const session = host.getSession(info.sessionId);
+			if (session === undefined) return undefined;
+			const mapped = mapping.upsert(session.header);
+			if (info.toolName === "ctx_reduce") {
+				channel1.noteReduce(mapped.mcSession);
+				return undefined;
+			}
+			const verdict = decideChannel1For(
+				{
+					session,
+					mcSession: mapped.mcSession,
+					projection: projectDshSessionLog(
+						opts.readSessionLog?.(info.sessionId) ?? [],
+					),
+					rules: rulesForRole(mapped.role),
+					band: meter.lane(info.sessionId),
+					permission: rebuildPermission({
+						schedulerAllows: false,
+						band: meter.lane(info.sessionId),
+					}),
+					config,
+					db,
+					protectedMessageIds: new Set<string>(),
+				},
+				channel1,
+				false,
+			);
+			if (!verdict.fire || verdict.text === undefined) return undefined;
+			return { additionalContext: [{ type: "text", text: verdict.text }] };
+		}),
+	);
+	registerEffect(
+		"reduce-nudge-channel1-tracker",
+		() => () => channel1.detachAll(),
+	);
 
 	// T028 — overflow recovery: learn the route's real window, fold, retry once.
 	const overflowLedger = new OverflowLedger();

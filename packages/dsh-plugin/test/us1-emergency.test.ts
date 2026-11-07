@@ -404,3 +404,43 @@ describe("ctx_reduce channel-2 nudge", () => {
 		expect(measurement.shouldTrigger).toBe(false);
 	});
 });
+
+describe("ctx_reduce channel-1 nudge (post-execute)", () => {
+	test("rides the post-execute verdict with the core's reminder copy", async () => {
+		const { mountAdapter } = await import("../src/index.js");
+		const host = new TestDshHost();
+		const session = host.addSession({ id: "s-ch1" }, [0, 1, 2]);
+		const tagger = createTagger();
+		const big = "spent output ".repeat(32_000);
+		session.seedMessage(0, "u1", "do the work", "user");
+		session.seedMessage(1, "a1", "", "assistant", {
+			blocks: [
+				{ type: "tool-call", id: "c1", name: "grep", arguments: "{}" },
+			] as never,
+		});
+		session.seedMessage(2, "t1", big, "tool", { toolCallId: "c1" });
+		tagger.assignTag("s-ch1", "u1", "message", 11, db);
+		tagger.assignTag("s-ch1", "a1", "message", 1, db);
+		tagger.assignToolTag("s-ch1", "c1", "a1", big.length, db, 0, "grep", 2);
+
+		const handle = mountAdapter(host, cfg, db, {
+			readSessionLog: (sessionId) =>
+				host.sessions.get(sessionId)?.logRecords() ?? [],
+		});
+		const verdict = await host.firePostTool({
+			sessionId: "s-ch1",
+			toolName: "grep",
+			text: "fresh output",
+		});
+		expect(verdict?.additionalContext).toBeDefined();
+		expect(JSON.stringify(verdict?.additionalContext)).toContain("ctx_reduce");
+		// A ctx_reduce call itself resets the tracker instead of nudging.
+		const afterReduce = await host.firePostTool({
+			sessionId: "s-ch1",
+			toolName: "ctx_reduce",
+			text: "stamped",
+		});
+		expect(afterReduce?.additionalContext).toBeUndefined();
+		await handle.dispose();
+	});
+});
