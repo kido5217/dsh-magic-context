@@ -7,6 +7,7 @@
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage";
 import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
+import { getPendingOpsCount } from "@magic-context/core/features/magic-context/storage-ops";
 import {
 	buildStatusView,
 	type StatusSection,
@@ -150,7 +151,9 @@ export function buildStatusText(
 		profileTokens: 0,
 		historyBlockTokens: 0,
 		lastNudgeTokens: meta.lastNudgeTokens,
-		pendingOpsCount: 0,
+		// N-13: the real queue depth — drops strip in the NEXT pass, and the
+		// user needs to see that (other hosts show this via the same view).
+		pendingOpsCount: getPendingOpsCount(db, mcSession) ?? 0,
 		cacheTtl,
 		lastResponseTime: meta.lastResponseTime,
 		cacheRemainingMs:
