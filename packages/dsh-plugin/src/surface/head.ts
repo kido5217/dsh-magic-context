@@ -31,6 +31,10 @@
  * ahead of it; the fold (and a re-baseline) re-emits it after the tail.
  */
 import { createHash, randomUUID } from "node:crypto";
+import type {
+	ImageAttachmentRef,
+	SaveImageAttachment,
+} from "@deepseek-ai/dsh-attachment";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import { getCompartments } from "@magic-context/core/features/magic-context/compartment-storage";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
@@ -40,6 +44,7 @@ import type { ContextDatabase } from "@magic-context/core/features/magic-context
 import { updateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
 import type { M0SnapshotMarkers } from "@magic-context/core/hooks/magic-context/inject-compartments";
 import type { DshSession } from "../host.js";
+import type { HistorianRoute } from "../sessions/historian.js";
 import type { DshLogProjection } from "./dsh-session-log.js";
 import { isAdapterSurfaceId } from "./dsh-session-log.js";
 import type { McReplacementContent } from "./events.js";
@@ -47,6 +52,13 @@ import { BaselineRenderer } from "./head-baseline.js";
 import { readHeadCursors } from "./head-cursors.js";
 import { DeltaRenderer } from "./head-delta.js";
 import type { ManagedEdits, ShadowInfo } from "./managed-edits.js";
+
+/** The subset of the host attachment store the mural path needs. */
+export interface MuralAttachments {
+	saveImages(
+		inputs: readonly SaveImageAttachment[],
+	): Promise<readonly ImageAttachmentRef[]>;
+}
 
 export interface HeadRenderContext {
 	readonly mcSession: string;
@@ -95,6 +107,10 @@ export class HeadManager {
 		private readonly managedEdits: ManagedEdits,
 		private readonly config: MagicContextConfig,
 		private readonly projectDir: string,
+		/** Live route view (mutable host observer): gates the mural image (T047). */
+		private readonly route?: HistorianRoute,
+		/** Host attachment store; absent ⇒ murals never ship bytes. */
+		private readonly attachments?: MuralAttachments,
 	) {
 		this.baseline = new BaselineRenderer(db, config, projectDir);
 		this.deltas = new DeltaRenderer(this.baseline);
@@ -228,12 +244,47 @@ export class HeadManager {
 	private async renderBaseline(context: HeadRenderContext): Promise<{
 		baselineText: string;
 		deltaText: string;
+		muralBytes?: Uint8Array;
 	}> {
-		const base = this.baseline.materialize(context);
+		const base = this.baseline.materialize({
+			...context,
+			imageInput: this.route?.imageInput === true,
+		});
 		updateSessionMeta(this.db, context.mcSession, {
 			systemPromptHash: pairFingerprint(base.text, base.m1Text),
 		});
-		return { baselineText: base.text, deltaText: base.m1Text };
+		return {
+			baselineText: base.text,
+			deltaText: base.m1Text,
+			...(base.muralBytes !== undefined ? { muralBytes: base.muralBytes } : {}),
+		};
+	}
+
+	/** Baseline node content: the text, plus the mural image block when present. */
+	private async baselineContent(rendered: {
+		baselineText: string;
+		muralBytes?: Uint8Array;
+	}): Promise<McReplacementContent> {
+		const blocks: McReplacementContent = [
+			{ type: "text", text: rendered.baselineText },
+		];
+		if (rendered.muralBytes !== undefined && this.attachments !== undefined) {
+			try {
+				const refs = await this.attachments.saveImages([
+					{
+						data: rendered.muralBytes,
+						mediaType: "image/png",
+						name: "memory-mural.png",
+					},
+				]);
+				const ref = refs[0];
+				if (ref !== undefined) blocks.push({ type: "image", attachment: ref });
+			} catch {
+				// A refused image degrades to text-only for this baseline; the
+				// `<memory-mural>` block guidance keeps pointing at ctx_search.
+			}
+		}
+		return blocks;
 	}
 
 	/**
@@ -244,14 +295,19 @@ export class HeadManager {
 	private async applyPair(
 		session: DshSession,
 		context: HeadRenderContext,
-		rendered: { baselineText: string; deltaText: string },
+		rendered: {
+			baselineText: string;
+			deltaText: string;
+			muralBytes?: Uint8Array;
+		},
 		ordered: readonly number[],
 	): Promise<ShadowInfo> {
+		const content = await this.baselineContent(rendered);
 		let baselineSeq: number;
 		let shadowedSeqs: readonly number[] = [];
 		if (ordered.length > 0) {
 			const result = await session.replaceSurface(
-				textContent(rendered.baselineText),
+				content,
 				ordered[0]!,
 				ordered[ordered.length - 1]!,
 				ordered,
@@ -259,9 +315,7 @@ export class HeadManager {
 			baselineSeq = result.replacementSeq;
 			shadowedSeqs = ordered;
 		} else {
-			baselineSeq = (
-				await session.appendTail(textContent(rendered.baselineText))
-			).seq;
+			baselineSeq = (await session.appendTail(content)).seq;
 		}
 		const deltaSeq = (await session.appendTail(textContent(rendered.deltaText)))
 			.seq;

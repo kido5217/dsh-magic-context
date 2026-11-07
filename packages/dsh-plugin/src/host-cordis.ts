@@ -307,8 +307,15 @@ export interface CordisHostOptions {
 	 * step fail-closed, FR-004).
 	 */
 	readonly sessionLog?: CordisSessionLogSource;
-	/** Sees each step's model selection; feeds the historian route (host-owned model). */
-	readonly observeModel?: (selection: ModelSelection | undefined) => void;
+	/**
+	 * Sees each step's model selection; feeds the historian route (host-owned
+	 * model) and the mural capability (image input, FR-006). `imageInput` is
+	 * the routed model's advertised modality — unknown routes report false.
+	 */
+	readonly observeModel?: (
+		selection: ModelSelection | undefined,
+		imageInput: boolean,
+	) => void;
 }
 
 export function createCordisHost(
@@ -392,7 +399,7 @@ export function createCordisHost(
 			return ctx.on("agent/pre-step", (payload, next) =>
 				(async (): Promise<AgentPreStepDecision> => {
 					const sessionId = payload.agent.session.id;
-					observeModel?.(payload.modelSelection);
+					let imageInput = false;
 					if (payload.modelSelection !== undefined) {
 						// Resolve the routed model's capacity for band pricing
 						// (see routedWindows). Best effort: an unresolved route
@@ -406,6 +413,7 @@ export function createCordisHost(
 							if (capacity !== undefined)
 								routedWindows.set(sessionId, capacity);
 							else routedWindows.delete(sessionId);
+							imageInput = prepared.inputModalities?.includes("image") === true;
 							log(
 								`[dsh-magic-context] routed window for ${sessionId}: ${payload.modelSelection.provider}/${payload.modelSelection.model} ⇒ ${capacity ?? "undisclosed"}`,
 							);
@@ -415,6 +423,7 @@ export function createCordisHost(
 					} else {
 						routedWindows.delete(sessionId);
 					}
+					observeModel?.(payload.modelSelection, imageInput);
 					if (source !== undefined) {
 						// The pass bridge reads the snapshot synchronously; refresh
 						// it here, the one async moment before every listener. A
@@ -625,13 +634,20 @@ export function createCordisSessionLogSource(
  * the next fold without remounting.
  */
 export function createCordisHistorianRoute(): {
-	readonly observe: (selection: ModelSelection | undefined) => void;
+	readonly observe: (
+		selection: ModelSelection | undefined,
+		imageInput: boolean,
+	) => void;
 	readonly route: HistorianRoute;
 } {
 	let current: ModelSelection | undefined;
+	let imageInput = false;
 	return {
-		observe: (selection) => {
-			if (selection !== undefined) current = selection;
+		observe: (selection, modalities) => {
+			if (selection !== undefined) {
+				current = selection;
+				imageInput = modalities;
+			}
 		},
 		route: {
 			get provider(): string {
@@ -639,6 +655,9 @@ export function createCordisHistorianRoute(): {
 			},
 			get model(): string {
 				return current?.model ?? "";
+			},
+			get imageInput(): boolean {
+				return imageInput;
 			},
 		},
 	};

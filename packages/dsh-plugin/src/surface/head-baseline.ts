@@ -22,11 +22,13 @@ import { resolveProjectIdentityForSession } from "@magic-context/core/features/m
 import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import {
+	DEFAULT_MEMORY_BUDGET_TOKENS,
 	type M0M1RenderOptions,
 	type M0SnapshotMarkers,
 	materializeM0,
 } from "@magic-context/core/hooks/magic-context/inject-compartments";
 import type { DshLogProjection } from "./dsh-session-log.js";
+import { type BaselineMural, resolveBaselineMural } from "./mural.js";
 import { syncProjectionTimes } from "./projection-times.js";
 
 export interface BaselineContext {
@@ -35,6 +37,8 @@ export interface BaselineContext {
 	readonly subagent: boolean;
 	/** Durable-log projection; supplies the message times behind compartment dates. */
 	readonly projection?: DshLogProjection;
+	/** Routed model advertises image input (FR-006); unknown ⇒ false ⇒ no mural. */
+	readonly imageInput?: boolean;
 }
 
 export interface BaselineResult {
@@ -45,6 +49,8 @@ export interface BaselineResult {
 	/** The cursors frozen with this render (the delta renders against these). */
 	readonly markers: M0SnapshotMarkers;
 	readonly renderedMemoryIds: readonly number[];
+	/** Encoded mural PNG when this baseline carries a mural image (T047). */
+	readonly muralBytes?: Uint8Array;
 }
 
 export class BaselineRenderer {
@@ -106,7 +112,23 @@ export class BaselineRenderer {
 	materialize(context: BaselineContext): BaselineResult {
 		if (context.projection !== undefined)
 			syncProjectionTimes(this.db, context.mcSession, context.projection);
-		const result = materializeM0(this.coreOptions(context.mcSession));
+		// Mural (T047): flag + identity + ROUTE capability gate the core's
+		// on-demand render. Explicit wire options override the core's internal
+		// (registry-based) model-key gate — the DSH route's advertised
+		// modalities are the capability truth here.
+		const mural: BaselineMural | undefined = resolveBaselineMural(
+			this.db,
+			this.config,
+			resolveProjectIdentityForSession(this.projectDir),
+			context.imageInput === true,
+			this.config.memory?.injection_budget_tokens ??
+				DEFAULT_MEMORY_BUDGET_TOKENS,
+			context.mcSession,
+		);
+		const result = materializeM0({
+			...this.coreOptions(context.mcSession),
+			...(mural !== undefined ? { mural: mural.options } : {}),
+		});
 		// Retired sources (T046): the v1 adapter cached its memory block in
 		// `session_meta.memory_block_cache`; the baseline now renders through the
 		// core materializer, so any stale cache is cleared once (idempotent).
@@ -125,6 +147,7 @@ export class BaselineRenderer {
 			m1Text: result.m1Text,
 			markers: result.snapshotMarkers,
 			renderedMemoryIds: result.renderedMemoryIds,
+			...(mural?.bytes !== undefined ? { muralBytes: mural.bytes } : {}),
 		};
 	}
 }

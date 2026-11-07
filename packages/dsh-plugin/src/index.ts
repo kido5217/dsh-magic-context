@@ -59,7 +59,7 @@ import {
 } from "./surface/apply-operations.js";
 import type { DshSessionLogReader } from "./surface/dsh-session-log.js";
 import { projectDshSessionLog } from "./surface/dsh-session-log.js";
-import { HeadManager } from "./surface/head.js";
+import { HeadManager, type MuralAttachments } from "./surface/head.js";
 import { ManagedEdits } from "./surface/managed-edits.js";
 import { registerMagicContextToolsDsh } from "./tools/index.js";
 
@@ -73,6 +73,7 @@ export const inject = [
 	"sessions",
 	"sessionQuery",
 	"tokenMeter",
+	"attachments",
 ];
 
 export interface MountOptions {
@@ -92,6 +93,11 @@ export interface MountOptions {
 	readonly projectDir?: string;
 	/** Model key for per-model prompt-surface epochs. */
 	readonly modelKey?: string;
+	/**
+	 * Host attachment store; the mural image (T047) commits through it.
+	 * Absent ⇒ murals stay text-only.
+	 */
+	readonly attachments?: MuralAttachments;
 }
 
 /** Handle over the mounted foundation; `dispose()` unwinds every effect. */
@@ -254,6 +260,8 @@ export function mountAdapter(
 		managedEdits,
 		config,
 		opts.projectDir ?? process.cwd(),
+		opts.historianRoute,
+		opts.attachments,
 	);
 	const historian = new Historian(
 		host,
@@ -393,6 +401,7 @@ export async function apply(
 			readSessionLog: sessionLog.read,
 			historianRoute: historian.route,
 			projectDir: cwd,
+			attachments: ctx.attachments,
 		},
 	);
 	ctx.effect(() => handle.dispose, "dsh-magic-context");

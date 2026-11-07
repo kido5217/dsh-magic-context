@@ -70,6 +70,12 @@ import type { McRoleRules } from "./subagent-rules.js";
 export interface HistorianRoute {
 	readonly provider: string;
 	readonly model: string;
+	/**
+	 * Routed model advertises `image` input (updated by the host's step
+	 * observer). Unknown ⇒ absent/false: murals and every other image payload
+	 * stay text-only (FR-006).
+	 */
+	readonly imageInput?: boolean;
 }
 
 export interface FoldRequest {
