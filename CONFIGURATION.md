@@ -145,7 +145,7 @@ For semantic search to work cross-harness, every host resolves embedding config 
 
 The DSH adapter (`@cortexkit/dsh-magic-context`) reads exactly this file and schema — no DSH-only keys (verified by a config-parity test that scans every key the adapter reads). Supported hosts: the bundle's `engines.dsh` range (currently `>= 0.2.2-rc.1 < 0.3`); widening it is a recorded compatibility decision. The only value taken from the DSH plugin registration itself is an optional `cwd` project hint, which is not a Magic Context setting.
 
-**Maintenance model block.** The DSH background-maintenance lane starts only when a dreamer model block enables it, and the adapter prefers **`dreamer.dsh`**, falling back to **`dreamer.pi`** — both carry "host without a visible session list" semantics, which is what DSH's hidden carriers are. Caveat while the core schema catches up: this schema declares `dreamer.opencode` / `.pi` / `.omp` but not `dreamer.dsh`, so schema validation strips a `dreamer.dsh` block from the parsed config and today **`dreamer.pi` is the effective block on DSH**; the `dreamer.dsh` precedence takes effect once the core schema records the `dsh` entry (tracked in the adapter's parity test).
+**Maintenance model block.** The DSH background-maintenance lane starts only when a dreamer model block enables it, and the adapter prefers **`dreamer.dsh`**, falling back to **`dreamer.pi`** — both carry "host without a visible session list" semantics, which is what DSH's hidden carriers are, and the schema declares both with the same serverless host-block shape. `dreamer.disable: true` stops the lane, as elsewhere.
 
 **Commands.** All six slash commands ship on DSH: `/ctx-status`, `/ctx-flush`, `/ctx-embed`, `/ctx-recomp`, `/ctx-wrapup`, `/ctx-dream`. Host-shaped differences: `/ctx-embed` accepts `start` (anything else prints usage) and answers that embeddings are off when `embedding.provider` is `off` or `local` (the DSH bundle ships the remote embedding runtime only); `/ctx-dream` refuses with a pointer to the dreamer block when no dreamer model enables the lane; slash-command dispatch is surface-side, so a headless DSH boot registers the commands without dispatching them.
 
@@ -662,6 +662,7 @@ Dreamer scheduling and agent metadata remain at `dreamer`, while task execution 
 | `dreamer.opencode` | `model`, `fallback_models`, `variant`, `tasks` | Strict OpenCode execution block. `fallback_models` is an array of OpenCode entries. |
 | `dreamer.pi` | `model`, `fallback_models`, `thinking_level`, `tasks` | Strict Pi execution block. `fallback_models` is an array of Pi entries. |
 | `dreamer.omp` | `model`, `fallback_models`, `thinking_level`, `tasks` | Strict OMP execution block; absent block falls back to `dreamer.pi`. |
+| `dreamer.dsh` | `model`, `fallback_models`, `tasks` | DSH execution block (serverless host-block shape, shared with `dreamer.pi`); the DSH adapter reads `dsh` first and falls back to `pi`. |
 | `dreamer.opencode.tasks.<task>` | `model`, `fallback_models`, `variant`, `timeout_minutes` | Strict OpenCode task execution override. |
 | `dreamer.pi.tasks.<task>` | `model`, `fallback_models`, `thinking_level`, `timeout_minutes` | Strict Pi task execution override. |
 | `dreamer.omp.tasks.<task>` | `model`, `fallback_models`, `thinking_level`, `timeout_minutes` | Strict OMP task execution override. |

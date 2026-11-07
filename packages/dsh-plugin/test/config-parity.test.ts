@@ -6,10 +6,11 @@
  * (FR-006: no DSH-only knobs). Enforced as a static scan of src/ against an
  * explicit allowlist: every read found in source text must be allowlisted,
  * every allowlisted entry must still be read (no stale entries), and every
- * allowlisted path must resolve inside the schema — except the paths pinned
- * in REPORTED_NOT_IN_SCHEMA, which are tracked violations (reported, not
- * silently fixed): when the core schema grows a `dsh` dreamer block, that
- * entry fails its pin and must be promoted into SCHEMA_READ_KEYS.
+ * allowlisted path must resolve inside the schema. The audit that produced
+ * this test found two off-schema reads (`dreamer.dsh`, `dreamer.enabled`);
+ * the schema has since declared the `dsh` host block and the adapter reads
+ * `dreamer.disable`, so the mapping test now guards exactly that state —
+ * including a regression pin that `dreamer.dsh` stays a schema member.
  *
  * (b) The shipped no-config behaviors: an empty config parses to the schema
  * defaults, `/ctx-embed start` answers honestly when the bundle ships no
@@ -29,7 +30,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandDefinition } from "@deepseek-ai/dsh-commands";
 import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
-import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { openDatabaseAsync } from "@magic-context/core/features/magic-context/storage-db";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { type CommandDeps, registerCommands } from "../src/commands/index.js";
@@ -54,7 +54,15 @@ const SCHEMA_READ_KEYS: readonly string[] = [
 	"caveman_text_compression.enabled",
 	"caveman_text_compression.min_chars",
 	"dreamer",
+	"dreamer.disable",
 	"dreamer.inject_docs",
+	// Reads found during this audit while `dreamer.dsh` was still outside the
+	// schema (then: stripped by validation; a `dreamer.enabled` disable read
+	// was likewise off-schema). The core schema has since declared the
+	// serverless host block and the adapter switched to `dreamer.disable`;
+	// these two keys are schema members now and the mapping test guards them.
+	"dreamer.dsh",
+	"dreamer.pi",
 	"embedding.provider",
 	"enabled",
 	"execute_threshold_percentage",
@@ -77,27 +85,6 @@ const SCHEMA_READ_KEYS: readonly string[] = [
 	"sqlite",
 	"subc.connection_file",
 	"temporal_awareness",
-	// Dreamer-block reads inside the maintenance mount (the only module that
-	// unpacks `config.dreamer` into a local; scanned separately below).
-	"dreamer.pi",
-	// Tracked violations — see REPORTED_NOT_IN_SCHEMA.
-	"dreamer.dsh",
-	"dreamer.enabled",
-];
-
-/**
- * Tracked violations: read by the adapter, NOT declared in the shared
- * schema, and therefore stripped by `MagicContextConfigSchema` validation
- * (verified below). `dreamer.dsh` is the adapter's DSH dreamer-model block
- * (preferred over `dreamer.pi`); until the core schema declares it, a parsed
- * production config carries the lane only through `dreamer.pi` and the
- * precedence is visible only to raw pre-parse blocks (tests, migrations).
- * `dreamer.enabled` is a lenient disable read; the schema key is
- * `dreamer.disable`. Reported, not silently fixed.
- */
-const REPORTED_NOT_IN_SCHEMA: readonly string[] = [
-	"dreamer.dsh",
-	"dreamer.enabled",
 ];
 
 /**
@@ -243,22 +230,21 @@ describe("config-key parity (T093a)", () => {
 	});
 
 	test("every allowlisted read maps to the shared schema (no DSH-only knobs)", () => {
-		const exempt = new Set([
-			...REPORTED_NOT_IN_SCHEMA,
-			...HOST_PLUGIN_OPTION_KEYS,
-		]);
+		const exempt = new Set(HOST_PLUGIN_OPTION_KEYS);
 		const violations = SCHEMA_READ_KEYS.filter(
 			(key) => !exempt.has(key) && !resolvesInSchema(key),
 		).sort();
 		expect(violations).toEqual([]);
 	});
 
-	test("the reported violations are still absent from the core schema (promote them when it grows a dsh block)", () => {
-		for (const key of REPORTED_NOT_IN_SCHEMA)
-			expect({ key, resolves: resolvesInSchema(key) }).toEqual({
-				key,
-				resolves: false,
-			});
+	test("the dreamer host blocks the adapter prefers are declared by the core schema", () => {
+		// Regression pin for the audit finding: `dreamer.dsh` was once read
+		// by the adapter before the schema declared it (validation stripped
+		// it, so it could never reach the parsed config). It must stay a
+		// schema member for the dreamer.dsh-over-dreamer.pi precedence.
+		expect(resolvesInSchema("dreamer.dsh")).toBe(true);
+		expect(resolvesInSchema("dreamer.pi")).toBe(true);
+		expect(resolvesInSchema("dreamer.disable")).toBe(true);
 	});
 
 	test("the host plugin option reads are only the documented cwd", () => {
@@ -332,7 +318,7 @@ describe("loadDshConfig honest defaults (T093b)", () => {
 			version: "0.0.0-parity",
 			projectDir,
 			maintenance: () => undefined,
-			register: (definition) => {
+			register: (definition: CommandDefinition) => {
 				definitions.set(definition.name, definition);
 				return () => definitions.delete(definition.name);
 			},
@@ -356,13 +342,21 @@ describe("loadDshConfig honest defaults (T093b)", () => {
 		const { config } = loadDshConfig({ cwd: projectDir });
 		// The single gate: no dreamer block (or an explicit disable) ⇒ no lane.
 		expect(maintenanceRunnable(config)).toBe(false);
-		expect(maintenanceRunnable({ dreamer: { enabled: false } })).toBe(false);
+		expect(maintenanceRunnable({ dreamer: { disable: true } })).toBe(false);
 		expect(
 			maintenanceRunnable({ dreamer: { pi: { model: "provider/model" } } }),
 		).toBe(true);
 		expect(
 			maintenanceRunnable({ dreamer: { dsh: { model: "provider/model" } } }),
 		).toBe(true);
+		// The `dreamer.dsh` block now survives schema validation end-to-end
+		// (it was stripped before the core schema declared it).
+		const dshDreamer = MagicContextConfigSchema.safeParse({
+			dreamer: { dsh: { model: "provider/model" } },
+		});
+		expect(dshDreamer.success).toBe(true);
+		if (dshDreamer.success)
+			expect(dshDreamer.data.dreamer?.dsh?.model).toBe("provider/model");
 
 		const db = (await openDatabaseAsync({
 			dbPath: join(root, "no-dreamer.db"),
@@ -377,7 +371,7 @@ describe("loadDshConfig honest defaults (T093b)", () => {
 			projectDir,
 			// Exactly what src/index.ts wires when maintenanceRunnable is false.
 			maintenance: () => undefined,
-			register: (definition) => {
+			register: (definition: CommandDefinition) => {
 				definitions.set(definition.name, definition);
 				return () => definitions.delete(definition.name);
 			},

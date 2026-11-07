@@ -28,10 +28,9 @@ registration itself is the optional `cwd` project hint passed to the plugin entr
 
 DSH reads the maintenance model from the `dreamer` block: **`dreamer.dsh` when you wrote
 one, otherwise `dreamer.pi`** — both carry the "host without a visible session list"
-semantics that DSH's hidden carriers are (see below). Note: the shared schema currently
-declares `dreamer.opencode` / `.pi` / `.omp` but not `dreamer.dsh`, so schema validation
-strips a `dreamer.dsh` block from the parsed config; today `dreamer.pi` is the effective
-block on DSH until the core schema records the `dsh` entry.
+semantics that DSH's hidden carriers are (see below), and the core schema declares both
+with the same serverless host-block shape. `dreamer.disable: true` stops the lane either
+way.
 
 ## Commands
 
@@ -68,8 +67,7 @@ against `/ctx-recomp`/`/ctx-wrapup`; non-managed sessions are no-ops.
 Background maintenance runs on two hidden DSH carriers (single-shot aux completions for
 one-shot tasks, a hidden parentless agent for tool-loop tasks) driven by the shared core
 task logic. The lane starts only when a dreamer model block enables it: `dreamer.dsh`
-preferred, `dreamer.pi` fallback, and not disabled (see the schema caveat under
-Configuration).
+preferred, `dreamer.pi` fallback, and not `dreamer.disable: true`.
 
 The hidden tool-loop agent gets a fixed tool allowlist —
 `["read", "grep", "glob", "edit", "write", "ctx_memory", "ctx_search"]`

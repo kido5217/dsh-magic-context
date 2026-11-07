@@ -122,13 +122,12 @@ per-harness **after** form for all new configuration.
     "omp": {
       "model": "opencode/provider-model-id",
       "thinking_level": "auto"
-    },
-    "dsh": { "model": "provider/model-id" }
+    }
   }
 }
 ```
 
-OMP uses Pi-native `thinking_level` qualifiers. If `historian.omp` or `dreamer.omp` is absent, OMP falls back to the matching `pi` block, so existing Pi-compatible configurations need no migration. An explicit OMP block is authoritative even when it omits a model.
+OMP uses Pi-native `thinking_level` qualifiers. If `historian.omp` or `dreamer.omp` is absent, OMP falls back to the matching `pi` block, so existing Pi-compatible configurations need no migration. An explicit OMP block is authoritative even when it omits a model. DSH needs no `historian` block at all — its summarizer runs through the DSH host's own routed model; `dreamer.dsh` (or `dreamer.pi`) does select the maintenance model.
 
 User-level config is `~/.config/cortexkit/magic-context.jsonc` on macOS/Linux and `%USERPROFILE%\.config\cortexkit\magic-context.jsonc` on Windows (or `$XDG_CONFIG_HOME/cortexkit/magic-context.jsonc` when set). OpenCode Desktop users can use the dashboard's config editor or hand-edit that file; Desktop does not include the CLI setup wizard.
 
