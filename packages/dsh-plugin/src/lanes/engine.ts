@@ -64,6 +64,15 @@ export interface LaneContext {
 	readonly db: ContextDatabase;
 	/** Message ids in the verbatim protected tail (never reclaim targets). */
 	readonly protectedMessageIds: ReadonlySet<string>;
+	/** Current pressure reading, for lanes that plan against a token target. */
+	readonly pressure?: LanePressure;
+}
+
+/** The pressure facts a lane may price against. */
+export interface LanePressure {
+	readonly pressureTokens?: number;
+	readonly contextWindow?: number;
+	readonly percentage?: number;
 }
 
 /** A selector's answer for one pass. */
@@ -106,6 +115,7 @@ export interface LanePassRequest {
 	readonly config: MagicContextConfig;
 	readonly db: ContextDatabase;
 	readonly protectedMessageIds?: ReadonlySet<string>;
+	readonly pressure?: LanePressure;
 	readonly lanes: readonly Lane[];
 	readonly gates: LaneGates;
 }
@@ -131,6 +141,7 @@ export async function runLanePass(
 		config: request.config,
 		db: request.db,
 		protectedMessageIds: request.protectedMessageIds ?? new Set<string>(),
+		...(request.pressure !== undefined ? { pressure: request.pressure } : {}),
 	};
 	const outcomes: LaneOutcome[] = [];
 	let changed = false;

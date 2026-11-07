@@ -93,6 +93,42 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
      sessions render and search what an OpenCode dreamer maintains (shared store).
      Declared per spec edge case 3 ("silence is not an option"), not silently skipped.
 
+15. **Resolved — assistant-body reduction is available (projection lane).** The v1 plan
+    treated edits *inside* an assistant message as host-blocked (a replacement must cite
+    every shadowed node, and `assistant/message` forbids `sourceEventSeqs`). That is true
+    of the surface REPLACE path, and false of the host's message-projection seam: an
+    ignorable, plugin-owned event plus a registered pure interpreter
+    (`ctx.sessions.registerMessageProjection`) rewrites an existing message's content
+    without changing node membership or identity (`packages/core/session/src/surface.ts`:
+    `planSurfaceEvent` consults registered projections before `surfaceOp`;
+    `applySurfacePlan`'s `kind:"project"` branch). The rewrite is durable while the
+    plugin is loaded and degrades to the original content — never a refusal — when it is
+    not, because unknown ignorable events are skipped by the reopen validator. Evidence:
+    `specs/002-dsh-full-parity/gate-evidence/spike-projection.md`,
+    `packages/dsh-plugin/test/projection.test.ts`. Consequence: reasoning clearing,
+    caveman compression of assistant prose and injection stripping inside assistant
+    content are all expressible; the previous "not applicable" class is withdrawn.
+
+16. **DSH-imposed — a subagent at the refuse wall takes one historian fold.** When a
+    child session is at the wall and no open reclaim lane can act (no queued drops, no
+    aged tool output, nothing superseded), the adapter runs one fold instead of refusing
+    the step. The fold PRESERVES the content as a summary rather than deleting it, and it
+    costs one aux model call. Rationale: a child has no user to negotiate with and its
+    caller is blocked on the answer; refusing would deadlock the delegation. On the other
+    harnesses the child's request is rewritten in place, so this situation does not
+    arise. Evidence: `src/pressure/lanes.ts` (refuse band, subagent branch),
+    `src/lanes/emergency.ts`, `test/us1-emergency.test.ts`.
+
+17. **DSH-imposed — reductions are per-node edits, never a span.** A queued drop edits
+    each target node on its own: a tool result is rewritten in place (content only,
+    identity and tool pairing preserved), a user message is replaced one-for-one, and an
+    assistant body goes through the projection lane (entry 15). The earlier v1
+    implementation collapsed a drop cluster into one `user/message` replacement covering
+    `min…max`, which swallowed every unrelated node between two targets. The host
+    permits the span, but the transcript harm is not host-forced, so the coarse form was
+    a defect rather than a divergence. Evidence: `src/surface/node-ops.ts`,
+    `test/node-ops.test.ts`, `test/us1-long-session.test.ts`.
+
 ## Resolved since the v1 ledger was written
 
 - **Transcript FTS indexing — wired through the pass lane (T045).** The core

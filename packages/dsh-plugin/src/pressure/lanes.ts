@@ -44,6 +44,8 @@ import type {
 	PreStepDecision,
 	PreStepInfo,
 } from "../host.js";
+import { cavemanLane } from "../lanes/caveman.js";
+import { emergencyDropLane } from "../lanes/emergency.js";
 import { runLanePass } from "../lanes/engine.js";
 import { LaneGates, rebuildPermission } from "../lanes/gating.js";
 import { injectionStripLane } from "../lanes/heuristics.js";
@@ -199,6 +201,38 @@ export class PressureLanes {
 		};
 
 		if (lane === "force" || lane === "refuse") {
+			// Subagent emergency fold (T035): a child at the wall tries every open
+			// reclaim lane FIRST (it may still have droppable tool output), and
+			// only when none can act does it take the DSH-imposed divergence —
+			// one historian fold, which summarizes rather than deletes. On a
+			// primary the fold stays first: its own history is the valuable one
+			// and summarizing it early protects the prefix.
+			if (lane === "refuse" && state.rules.role === "subagent") {
+				const emergencyPass = await runLanePass(this.deps.managedEdits, {
+					session,
+					mcSession: state.mcSession,
+					projection,
+					rules: state.rules,
+					band: lane,
+					permission: rebuildPermission({ schedulerAllows: false, band: lane }),
+					config: this.deps.config,
+					db: this.deps.db,
+					protectedMessageIds: new Set(
+						splitProtectedTail(
+							projection.records.filter(
+								(record) => !isAdapterSurfaceId(record.messageId),
+							),
+							budget,
+						).protectedTail.map((record) => record.messageId),
+					),
+					lanes: [emergencyDropLane, supersessionLane],
+					gates: this.gates,
+				});
+				if (emergencyPass.changed) {
+					this.refusalEpisode.delete(session.id);
+					return "enter";
+				}
+			}
 			const fold = await this.deps.historian.fold({
 				session,
 				mcSession: state.mcSession,
@@ -256,7 +290,19 @@ export class PressureLanes {
 					budget,
 				).protectedTail.map((record) => record.messageId),
 			),
-			lanes: [injectionStripLane, temporalLane, supersessionLane],
+			pressure: {
+				...(reading?.pressureTokens !== undefined
+					? { pressureTokens: reading.pressureTokens }
+					: {}),
+				...(reading?.contextWindow !== undefined
+					? { contextWindow: reading.contextWindow }
+					: {}),
+				...(() => {
+					const percentage = this.deps.meter.read(session.id).percentage;
+					return percentage !== null ? { percentage } : {};
+				})(),
+			},
+			lanes: [injectionStripLane, temporalLane, supersessionLane, cavemanLane],
 			gates: this.gates,
 		});
 		if (lanePass.changed) changed = true;
