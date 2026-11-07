@@ -10,10 +10,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	acquireLeaseWithAcquisition,
+	releaseLease,
+} from "@magic-context/core/features/magic-context/dreamer/lease";
+import {
 	getTaskScheduleState,
 	seedTaskScheduleState,
 	writeTaskScheduleState,
 } from "@magic-context/core/features/magic-context/dreamer/storage-task-schedule";
+import { leaseKeyFor } from "@magic-context/core/features/magic-context/dreamer/task-registry";
 import type {
 	DreamTaskRuntimeConfig,
 	TaskExecOutcome,
@@ -26,11 +31,6 @@ import {
 	closeDatabase,
 	openDatabaseAsync,
 } from "@magic-context/core/features/magic-context/storage-db";
-import {
-	acquireLeaseWithAcquisition,
-	releaseLease,
-} from "@magic-context/core/features/magic-context/dreamer/lease";
-import { leaseKeyFor } from "@magic-context/core/features/magic-context/dreamer/task-registry";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { MaintenanceScheduler } from "../src/maintenance/scheduler.js";
 
