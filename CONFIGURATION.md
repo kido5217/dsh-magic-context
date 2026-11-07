@@ -1,6 +1,6 @@
 # Configuration Reference
 
-`magic-context.jsonc` has shared top-level settings plus harness-specific model execution blocks. The schema is shared by the OpenCode plugin and the Pi-compatible extension used on both Pi and OMP. The DSH plugin reads the same file and schema and adds **no DSH-only settings**. Where a block selects a model per harness (`historian.opencode` / `.pi` / `.omp`, `dreamer.*`), the DSH summarizer instead runs through the DSH host's own routed model — the host owns routing for its plugin's auxiliary calls, so no `historian.dsh` block is needed (or accepted); pressure thresholds, scheduler, protected tags, memory, and all other settings apply identically on DSH.
+`magic-context.jsonc` has shared top-level settings plus harness-specific model execution blocks. The schema is shared by the OpenCode plugin and the Pi-compatible extension used on both Pi and OMP. The DSH plugin reads the same file and schema and adds **no DSH-only settings** — mechanically enforced by `packages/dsh-plugin/test/config-parity.test.ts`, which scans every config-key the DSH adapter reads and requires it to exist in this schema. Supported DSH hosts are the plugin bundle's declared `engines.dsh` range (currently `>= 0.2.2-rc.1 < 0.3`); raising that range is a recorded compatibility decision, not a silent dependency bump. Where a block selects a model per harness (`historian.opencode` / `.pi` / `.omp`, `dreamer.*`), the DSH summarizer instead runs through the DSH host's own routed model — the host owns routing for its plugin's auxiliary calls, so no `historian.dsh` block is needed (or accepted); pressure thresholds, scheduler, protected tags, memory, and all other settings apply identically on DSH. See [DSH (DeepSeek Harness)](#dsh-deepseek-harness) for the DSH-side model block, commands, and maintenance behavior.
 
 ### Configuration locations
 
@@ -140,6 +140,22 @@ Project memories therefore flow across OpenCode, Pi, and OMP, while per-session 
 > **OpenCode 2 hidden runs:** OpenCode 2.0.22 or newer is required. Each historian and Dreamer run gets a fresh child session on the resolved `historian.opencode` / `dreamer.opencode` model chain, preserving the calibrated prompt and keeping the user's model and token accounting untouched. Children are parented to the user's session when one exists and removed through the native session API when their run ends. On upgrade, recorded legacy children are removed in bounded, resumable boot batches.
 
 For semantic search to work cross-harness, every host resolves embedding config per project identity on each retrieval path. Keep the effective `embedding` block consistent across OpenCode, Pi, and OMP for the same project.
+
+### DSH (DeepSeek Harness)
+
+The DSH adapter (`@cortexkit/dsh-magic-context`) reads exactly this file and schema — no DSH-only keys (verified by a config-parity test that scans every key the adapter reads). Supported hosts: the bundle's `engines.dsh` range (currently `>= 0.2.2-rc.1 < 0.3`); widening it is a recorded compatibility decision. The only value taken from the DSH plugin registration itself is an optional `cwd` project hint, which is not a Magic Context setting.
+
+**Maintenance model block.** The DSH background-maintenance lane starts only when a dreamer model block enables it, and the adapter prefers **`dreamer.dsh`**, falling back to **`dreamer.pi`** — both carry "host without a visible session list" semantics, which is what DSH's hidden carriers are. Caveat while the core schema catches up: this schema declares `dreamer.opencode` / `.pi` / `.omp` but not `dreamer.dsh`, so schema validation strips a `dreamer.dsh` block from the parsed config and today **`dreamer.pi` is the effective block on DSH**; the `dreamer.dsh` precedence takes effect once the core schema records the `dsh` entry (tracked in the adapter's parity test).
+
+**Commands.** All six slash commands ship on DSH: `/ctx-status`, `/ctx-flush`, `/ctx-embed`, `/ctx-recomp`, `/ctx-wrapup`, `/ctx-dream`. Host-shaped differences: `/ctx-embed` accepts `start` (anything else prints usage) and answers that embeddings are off when `embedding.provider` is `off` or `local` (the DSH bundle ships the remote embedding runtime only); `/ctx-dream` refuses with a pointer to the dreamer block when no dreamer model enables the lane; slash-command dispatch is surface-side, so a headless DSH boot registers the commands without dispatching them.
+
+**Compaction.** Magic Context claims the host's compaction service for the sessions it manages (the bundle patch disables the profile's `compaction-basic` row). Automatic pressure triggers fold through Magic Context's own lane; an explicit `/compact` or region compaction on a managed session performs one real Magic Context fold; unmanaged sessions are untouched.
+
+**Maintenance tool allowlist.** The hidden tool-loop carrier runs with a fixed allowlist — `read`, `grep`, `glob`, `edit`, `write`, `ctx_memory`, `ctx_search` — and **no `bash`**: the carrier is a parentless session with no user who could approve arbitrary command execution, and no dream task needs a shell, so the background lane's side effects stay scoped to project files and the Magic Context store.
+
+**Self-update.** The npm update check rides the maintenance lane start (one check per boot), honors `auto_update: false` (user-level only, as elsewhere), never applies to dev (`link:`/`file:`) or user-pinned installs, and announces the applied update as restart-required through the log.
+
+**Environment seams.** Test/live-gate only, never set in production: `MAGIC_CONTEXT_TEST_NO_QUIET=1` (drop the boot-quiet period), `MAGIC_CONTEXT_TEST_TICK_MS` / `MAGIC_CONTEXT_TEST_JITTER_MS` (scheduler clock), `MAGIC_CONTEXT_TEST_DATA_DIR` (storage-isolation marker; also suppresses the update check). User-facing: `MAGIC_CONTEXT_NO_AUTO_UPDATE=1` disables the npm update check outright.
 
 ### Trusted-group shared storage
 
@@ -654,7 +670,7 @@ Dreamer scheduling and agent metadata remain at `dreamer`, while task execution 
 | `dreamer.tasks.review-user-memories`, `dreamer.tasks.promote-primers` | `schedule`, `promotion_threshold` | Task-specific promotion metadata. |
 | `dreamer.temperature`, `top_p`, `prompt`, `tools`, `disable`, `description`, `mode`, `color`, `maxSteps`, `permission`, `maxTokens`, `inject_docs` | metadata | Retained at `dreamer`; these fields never move into a harness block. |
 
-To disable the dreamer entirely, set `dreamer.disable: true`. This also turns off smart notes (`ctx_note` no longer offers `surface_condition`, whatever `smart_notes.enabled` says) and stops the historian from collecting user observations for `review-user-memories`; `dreamer.inject_docs` still applies. Each task follows the setting it serves: memory tasks need `memory.enabled: true`, `evaluate-smart-notes` needs `smart_notes.enabled`, `maintain-docs` and `review-user-memories` need only their schedule. Magic Context logs one `config note` line at startup for each such setting that has no effect. To disable a single task, set its top-level `dreamer.tasks.<task>.schedule` to `""`; it can still be run on demand via `/ctx-dream <task>`.
+To disable the dreamer entirely, set `dreamer.disable: true`. This also turns off smart notes (`ctx_note` no longer offers `surface_condition`, whatever `smart_notes.enabled` says) and stops the historian from collecting user observations for `review-user-memories`; `dreamer.inject_docs` still applies. Each task follows the setting it serves: memory tasks need `memory.enabled: true`, `evaluate-smart-notes` needs `smart_notes.enabled`, `maintain-docs` and `review-user-memories` need only their schedule. Magic Context logs one `config note` line at startup for each such setting that has no effect. To disable a single task, set its top-level `dreamer.tasks.<task>.schedule` to `""`; it can still be run on demand via `/ctx-dream <task>`. On DSH the lane additionally requires a dreamer model block — `dreamer.dsh` preferred, `dreamer.pi` fallback — see [DSH (DeepSeek Harness)](#dsh-deepseek-harness).
 
 ### The tasks
 
@@ -918,6 +934,8 @@ Emergency, age, supersession (including edit-marker compression), and duplicate 
 | `/ctx-recomp` | Rebuild all compartments and facts from raw session history. Resumable across restarts. |
 | `/ctx-recomp <start>-<end>` | Partial rebuild of a message range (e.g. `/ctx-recomp 1-11322`). Snaps to enclosing compartment boundaries, rebuilds only those compartments using current historian rules, and leaves prior/tail compartments and all session facts untouched. Useful after upgrading historian prompt versions or model quality. Resumable across restarts; running with a different range while partial-recomp staging exists is rejected. Currently Desktop/Web-only (TUI falls back to full-recomp dialog; ranged TUI dialog is planned). |
 | `/ctx-dream` | Enqueue the current project for a dream run and process immediately. |
+
+On DSH all six commands (`/ctx-status`, `/ctx-flush`, `/ctx-embed`, `/ctx-recomp`, `/ctx-wrapup`, `/ctx-dream`) ship with the shared handlers; see [DSH (DeepSeek Harness)](#dsh-deepseek-harness) for the host-shaped differences (embeddings-off answer, dreamer-block refusal, headless dispatch).
 
 ---
 
