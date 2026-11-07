@@ -141,11 +141,7 @@ describe("pressure band with learned window (N-02)", () => {
 		// now see 110k/128k ≈ 86% → inside the execute/force band, so folds
 		// trigger BEFORE the provider wall, matching the T028 comment.
 		const ledger = new OverflowLedger();
-		ledger.record(
-			"s-band",
-			detectOverflowError(OVERFLOW_ERROR),
-			200_000,
-		);
+		ledger.record("s-band", detectOverflowError(OVERFLOW_ERROR), 200_000);
 		meter.setWindowOverlay((id, advertised) =>
 			ledger.effectiveWindow(id, advertised),
 		);

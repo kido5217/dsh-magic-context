@@ -80,9 +80,9 @@ export interface HistorianRoute {
 	 * session last prepared a step. Absent ⇒ the global getters are used for
 	 * every session (single-selection harnesses).
 	 */
-	forSession?(sessionId: string):
-		| { readonly provider: string; readonly model: string }
-		| undefined;
+	forSession?(
+		sessionId: string,
+	): { readonly provider: string; readonly model: string } | undefined;
 	/**
 	 * Routed model advertises `image` input (updated by the host's step
 	 * observer). Unknown ⇒ absent/false: murals and every other image payload
@@ -238,8 +238,7 @@ export class Historian {
 		const adapterSeqs = projection.records
 			.filter(
 				(record, index) =>
-					isAdapterSurfaceId(record.messageId) &&
-					index <= lastEligiblePosition,
+					isAdapterSurfaceId(record.messageId) && index <= lastEligiblePosition,
 			)
 			.map((record) => record.seq);
 		if (this.route === undefined) {

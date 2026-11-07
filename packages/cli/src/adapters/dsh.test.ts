@@ -225,9 +225,7 @@ describe("profile compaction patch parsing", () => {
         );
         // Last explicit key wins within one row.
         expect(
-            parseDshCompactionState(
-                "- id: compaction-basic\n  disabled: true\n  enabled: true\n",
-            ),
+            parseDshCompactionState("- id: compaction-basic\n  disabled: true\n  enabled: true\n"),
         ).toBe("re-enabled");
     });
 

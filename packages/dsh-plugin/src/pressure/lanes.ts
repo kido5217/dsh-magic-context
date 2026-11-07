@@ -65,10 +65,7 @@ import { supersessionLane } from "../lanes/reclaim.js";
 import { channel2Lease, reduceNudgeLane } from "../lanes/reduce-nudge.js";
 import { temporalLane } from "../lanes/temporal.js";
 import { todoDelivery, todoLane } from "../lanes/todo.js";
-import type {
-	FoldOutcome,
-	Historian,
-} from "../sessions/historian.js";
+import type { FoldOutcome, Historian } from "../sessions/historian.js";
 import { indexDshSessionHistory } from "../sessions/history-index.js";
 import type { SessionMapping } from "../sessions/mapping.js";
 import { type McRoleRules, rulesForRole } from "../sessions/subagent-rules.js";
@@ -562,12 +559,10 @@ export class PressureLanes {
 						importance: compartment.importance,
 						episodeType: compartment.episodeType,
 					})),
-					facts: getSessionFacts(this.deps.db, state.mcSession).map(
-						(fact) => ({
-							category: fact.category,
-							content: fact.content,
-						}),
-					),
+					facts: getSessionFacts(this.deps.db, state.mcSession).map((fact) => ({
+						category: fact.category,
+						content: fact.content,
+					})),
 				};
 				replaceAllCompartmentState(this.deps.db, state.mcSession, [], []);
 			}

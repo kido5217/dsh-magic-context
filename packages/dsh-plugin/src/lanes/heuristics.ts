@@ -23,6 +23,7 @@
  */
 
 import type { ContentBlock } from "@deepseek-ai/dsh-llm/types";
+import { protectedToolTagNumbers } from "@magic-context/core/features/magic-context/reclaim-protection";
 import { getActiveTagsBySession } from "@magic-context/core/features/magic-context/storage-tags";
 import type { TagEntry } from "@magic-context/core/features/magic-context/types";
 import { applyHeuristicCleanup } from "@magic-context/core/hooks/magic-context/heuristic-cleanup";
@@ -177,9 +178,7 @@ export function selectDedup(context: LaneContext): DedupSelection | null {
 			.map((tag) => tag.tagNumber),
 	);
 	const protectedCutoff =
-		protectedTagNumbers.size === 0
-			? null
-			: Math.min(...protectedTagNumbers);
+		protectedTagNumbers.size === 0 ? null : Math.min(...protectedTagNumbers);
 	const result = applyHeuristicCleanup(
 		context.mcSession,
 		context.db,
@@ -199,6 +198,101 @@ export function selectDedup(context: LaneContext): DedupSelection | null {
 	};
 }
 
+/**
+ * Pure work detector (N-09): would the core's routine dedup arm retire
+ * anything THIS pass? Mirrors its fingerprint doctrine exactly — owner-keyed
+ * composites (`<ownerMsgId>\0<callId>`), fingerprints
+ * (`<ownerMsgId>:<toolName>:<args>`), same-owner groups of 2+, the oldest
+ * copies not protected. The core gates fingerprints to its
+ * `DEDUP_SAFE_TOOLS` idempotence list; the set is mirrored below because the
+ * core keeps it module-private — drift here can only ever cause a no-op
+ * bracket (missed skip), never a wrong write. Injection stripping cannot
+ * fire through DSH's tag targets (no `getContent`), so tool duplicates are
+ * the whole work question.
+ */
+const DEDUP_SAFE_TOOLS = new Set([
+	"grep",
+	"read",
+	"glob",
+	"ast_grep_search",
+	"lsp_diagnostics",
+	"lsp_symbols",
+	"lsp_find_references",
+	"lsp_goto_definition",
+	"lsp_prepare_rename",
+	"mcp_grep",
+	"mcp_read",
+	"mcp_glob",
+	"mcp_ast_grep_search",
+	"mcp_lsp_diagnostics",
+	"mcp_lsp_symbols",
+	"mcp_lsp_find_references",
+	"mcp_lsp_goto_definition",
+	"mcp_lsp_prepare_rename",
+]);
+
+export function dedupWorkExists(context: LaneContext): boolean {
+	const tags = getActiveTagsBySession(context.db, context.mcSession);
+	if (tags.length === 0) return false;
+	const { messages } = dedupMessages(context);
+	if (messages.length === 0) return false;
+	const fingerprints = new Map<string, string>();
+	for (const message of messages) {
+		const owner = typeof message.info.id === "string" ? message.info.id : null;
+		if (owner === null) continue;
+		for (const part of message.parts) {
+			const record = part as Record<string, unknown>;
+			if (
+				record.type !== "tool_use" ||
+				typeof record.id !== "string" ||
+				typeof record.name !== "string" ||
+				!DEDUP_SAFE_TOOLS.has(record.name)
+			)
+				continue;
+			fingerprints.set(
+				`${owner}\u0000${record.id}`,
+				`${owner}:${record.name}:${JSON.stringify(record.input ?? {})}`,
+			);
+		}
+	}
+	if (fingerprints.size === 0) return false;
+	const byComposite = new Map<string, (typeof tags)[number]>();
+	for (const tag of tags) {
+		if (tag.type !== "tool") continue;
+		byComposite.set(
+			tag.toolOwnerMessageId !== null && tag.toolOwnerMessageId !== undefined
+				? `${tag.toolOwnerMessageId}\u0000${tag.messageId}`
+				: tag.messageId,
+			tag,
+		);
+	}
+	const protectedTags = new Set(
+		tags
+			.filter((tag) => context.protectedMessageIds.has(tag.messageId))
+			.map((tag) => tag.tagNumber),
+	);
+	const protectedToolTags = protectedToolTagNumbers(tags, context.config.protected_tools);
+	const groups = new Map<string, (typeof tags)[number][]>();
+	for (const [composite, fingerprint] of fingerprints) {
+		const tag = byComposite.get(composite);
+		if (tag === undefined) continue;
+		const group = groups.get(fingerprint);
+		if (group === undefined) groups.set(fingerprint, [tag]);
+		else group.push(tag);
+	}
+	for (const group of groups.values()) {
+		if (group.length < 2) continue;
+		group.sort((a, b) => a.tagNumber - b.tagNumber);
+		for (let i = 0; i < group.length - 1; i++) {
+			const tag = group[i]!;
+			if (protectedTags.has(tag.tagNumber)) continue;
+			if (protectedToolTags.has(tag.tagNumber)) continue;
+			return true;
+		}
+	}
+	return false;
+}
+
 export const dedupLane: Lane = {
 	name: "dedup",
 	frequency: "routine",
@@ -206,10 +300,10 @@ export const dedupLane: Lane = {
 	select(context: LaneContext): LaneSelection {
 		// Pure decision-input (N-09): the store write happens inside the
 		// decision, under the bracket, like every other lane. The gate is a
-		// read-only question — with no tagged content there is nothing the
-		// core cleanup could retire.
-		if (getActiveTagsBySession(context.db, context.mcSession).length === 0)
-			return { requests: [] };
+		// read-only mirror of the core's dedup work question — a pass over
+		// already-clean state stays write-free AND bracket-free (the
+		// byte-stable-cache contract).
+		if (!dedupWorkExists(context)) return { requests: [] };
 		return {
 			requests: [],
 			decision: async () => selectDedup(context),

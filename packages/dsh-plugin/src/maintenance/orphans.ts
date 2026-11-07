@@ -38,10 +38,7 @@ function newestActivityMs(dir: string): number {
 	try {
 		for (const entry of readdirSync(dir, { withFileTypes: true })) {
 			try {
-				newest = Math.max(
-					newest,
-					statSync(join(dir, entry.name)).mtimeMs,
-				);
+				newest = Math.max(newest, statSync(join(dir, entry.name)).mtimeMs);
 			} catch {
 				// Raced removal of one entry: the dir-level mtime stands.
 			}

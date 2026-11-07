@@ -14,6 +14,12 @@ import {
 	cortexKitUserConfigBasePath,
 } from "@magic-context/core/config/migrate-config-location";
 import {
+	constrainProjectThresholdOverrides,
+	dropInheritedEmbeddingKeyOnRedirect,
+	restoreTrustedValuesOverInvalidProjectValues,
+	stripUnsafeProjectConfigFields,
+} from "@magic-context/core/config/project-security";
+import {
 	type MagicContextConfig,
 	MagicContextConfigSchema,
 } from "@magic-context/core/config/schema/magic-context";
@@ -21,12 +27,6 @@ import {
 	detectConfigFile,
 	readJsoncFile,
 } from "@magic-context/core/shared/jsonc-parser";
-import {
-	constrainProjectThresholdOverrides,
-	dropInheritedEmbeddingKeyOnRedirect,
-	restoreTrustedValuesOverInvalidProjectValues,
-	stripUnsafeProjectConfigFields,
-} from "@magic-context/core/config/project-security";
 
 /** Same shape as the core loader's issue collector, without the legacy
  * migrations (DSH has no legacy config locations to relocate). */
