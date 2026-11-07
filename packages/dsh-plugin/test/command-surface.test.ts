@@ -17,7 +17,11 @@
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { createLiveHome, type LiveHome } from "./live-home.js";
-import { MOCK_API_KEY_ENV, mockProviderEnv, startMockProvider } from "./mock-provider.js";
+import {
+	MOCK_API_KEY_ENV,
+	mockProviderEnv,
+	startMockProvider,
+} from "./mock-provider.js";
 
 const provider = startMockProvider();
 let home: LiveHome | undefined;
@@ -40,12 +44,18 @@ describe("command surface", () => {
 			defaultModel: "mock-model",
 		});
 		provider.script([{ text: "ok" }]);
-		const result = await home.runHeadlessAsync("/ctx-status", { env: mockProviderEnv() });
+		const result = await home.runHeadlessAsync("/ctx-status", {
+			env: mockProviderEnv(),
+		});
 		expect(result.status).toBe(0);
 		const messages = provider.messagesOf(0);
 		const userText = messages
 			.filter((message) => message["role"] === "user")
-			.map((message) => (typeof message["content"] === "string" ? message["content"] : JSON.stringify(message["content"])))
+			.map((message) =>
+				typeof message["content"] === "string"
+					? message["content"]
+					: JSON.stringify(message["content"]),
+			)
 			.join("\n");
 		// The text reached the model: the app did not intercept it.
 		expect(userText).toContain("/ctx-status");

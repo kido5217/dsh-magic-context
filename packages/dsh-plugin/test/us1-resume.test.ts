@@ -8,12 +8,22 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { getCompartments } from "@magic-context/core/features/magic-context/compartment-storage";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
-import { type AdapterHandle } from "../src/index.js";
+import type { AdapterHandle } from "../src/index.js";
 import { TestDshHost } from "./double.js";
-import { bigMessage, seedSession, setPressure, stepFor, us1Mount } from "./us1-support.js";
+import {
+	bigMessage,
+	seedSession,
+	setPressure,
+	stepFor,
+	us1Mount,
+} from "./us1-support.js";
 
 let db: ContextDatabase;
 let host = new TestDshHost();
@@ -21,7 +31,10 @@ let handle: AdapterHandle | undefined;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 });
 
 afterAll(async () => {
@@ -35,7 +48,9 @@ const later = { m8Seq: -1, m9Seq: -1 };
 
 function transcript(call: number): string {
 	const message = host.llmOptions[call]!.messages[0]!;
-	return (message as { content: readonly { text?: string }[] }).content.map((block) => block.text ?? "").join("");
+	return (message as { content: readonly { text?: string }[] }).content
+		.map((block) => block.text ?? "")
+		.join("");
 }
 
 /** Simulate a restart: a fresh host/ctx over the same durable session log. */
@@ -55,7 +70,13 @@ describe("US1 resume: covered history is never re-summarized", () => {
 		expect(session.eventsOf("mc/manage-end")).toHaveLength(1);
 
 		// Crash simulation: a bracket opened, the process died before the end.
-		await session.appendLogEvent("mc/manage-start", { changeId: "orphan-1", kind: "fold", mcSession: "r-main", dshSessionId: "r-main", ignorable: true });
+		await session.appendLogEvent("mc/manage-start", {
+			changeId: "orphan-1",
+			kind: "fold",
+			mcSession: "r-main",
+			dshSessionId: "r-main",
+			ignorable: true,
+		});
 		await handle.dispose();
 		handle = undefined;
 	});

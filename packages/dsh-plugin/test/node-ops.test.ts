@@ -15,28 +15,38 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
 import type { DshLogProjection } from "../src/surface/dsh-session-log.js";
 import { projectDshSessionLog } from "../src/surface/dsh-session-log.js";
-import { ManagedEdits, StoreUnavailableError } from "../src/surface/managed-edits.js";
+import type { McReplacementContent } from "../src/surface/events.js";
+import {
+	ManagedEdits,
+	StoreUnavailableError,
+} from "../src/surface/managed-edits.js";
 import {
 	applyNodeOps,
 	NodeOpError,
+	type NodeOpRequest,
 	nodeOpKindForRole,
 	planNodeOps,
 	runNodeOpsInBracket,
-	type NodeOpRequest,
 } from "../src/surface/node-ops.js";
-import type { McReplacementContent } from "../src/surface/events.js";
 import { TestDshHost } from "./double.js";
 
 let db: ContextDatabase;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 });
 
 afterAll(async () => {
@@ -89,14 +99,19 @@ describe("node op planning", () => {
 			{ messageId: "u1", content: DROP },
 		]);
 		expect(plan.ops).toHaveLength(1);
-		expect(plan.skipped.map((entry) => entry.reason)).toEqual(["unknown-target", "not-current"]);
+		expect(plan.skipped.map((entry) => entry.reason)).toEqual([
+			"unknown-target",
+			"not-current",
+		]);
 	});
 
 	test("an empty content request is a caller bug", () => {
 		const host = new TestDshHost();
 		const session = seedMixedSession(host, "s-empty");
 		const projection = projectionOf(host, "s-empty");
-		expect(() => planNodeOps(session, projection, [{ messageId: "u1", content: [] }])).toThrow(NodeOpError);
+		expect(() =>
+			planNodeOps(session, projection, [{ messageId: "u1", content: [] }]),
+		).toThrow(NodeOpError);
 	});
 
 	test("only tool and user roles have a sanctioned shape", () => {
@@ -112,11 +127,15 @@ describe("node op application", () => {
 		const host = new TestDshHost();
 		const session = seedMixedSession(host, "s-ident");
 		const projection = projectionOf(host, "s-ident");
-		const plan = planNodeOps(session, projection, [{ messageId: "t1", content: DROP }]);
+		const plan = planNodeOps(session, projection, [
+			{ messageId: "t1", content: DROP },
+		]);
 		const applied = await applyNodeOps(session, plan);
 		expect(applied).toHaveLength(1);
 		expect(applied[0]!.kind).toBe("tool-result-rewrite");
-		const record = session.logRecords().find((candidate) => candidate.messageId === "t1")!;
+		const record = session
+			.logRecords()
+			.find((candidate) => candidate.messageId === "t1")!;
 		expect(record.role).toBe("tool");
 		expect(record.text).toBe("[dropped §1§]");
 		// No span replacement was needed: the rewrite is a one-node patch.
@@ -128,10 +147,14 @@ describe("node op application", () => {
 		const host = new TestDshHost();
 		const session = seedMixedSession(host, "s-assist");
 		const projection = projectionOf(host, "s-assist");
-		const plan = planNodeOps(session, projection, [{ messageId: "a1", content: DROP }]);
+		const plan = planNodeOps(session, projection, [
+			{ messageId: "a1", content: DROP },
+		]);
 		await applyNodeOps(session, plan);
 		expect(session.surfaceNodes()).toEqual([0, 1, 2]);
-		expect(session.logRecords().find((record) => record.messageId === "a1")!.text).toBe("[dropped §1§]");
+		expect(
+			session.logRecords().find((record) => record.messageId === "a1")!.text,
+		).toBe("[dropped §1§]");
 	});
 });
 
@@ -140,9 +163,15 @@ describe("replay and failure behaviour", () => {
 		const host = new TestDshHost();
 		const session = seedMixedSession(host, "s-bytes");
 		const projection = projectionOf(host, "s-bytes");
-		const first = planNodeOps(session, projection, [{ messageId: "a1", content: DROP }]);
-		const second = planNodeOps(session, projection, [{ messageId: "a1", content: DROP }]);
-		expect(JSON.stringify(first.ops.map((op) => op.content))).toBe(JSON.stringify(second.ops.map((op) => op.content)));
+		const first = planNodeOps(session, projection, [
+			{ messageId: "a1", content: DROP },
+		]);
+		const second = planNodeOps(session, projection, [
+			{ messageId: "a1", content: DROP },
+		]);
+		expect(JSON.stringify(first.ops.map((op) => op.content))).toBe(
+			JSON.stringify(second.ops.map((op) => op.content)),
+		);
 	});
 
 	test("a failed surface effect closes the bracket and replays exactly once", async () => {
@@ -152,7 +181,10 @@ describe("replay and failure behaviour", () => {
 		const projection = projectionOf(host, "s-retry");
 		let failNext = true;
 		const original = session.rewriteAssistantBody.bind(session);
-		session.rewriteAssistantBody = async (seq: number, content: McReplacementContent) => {
+		session.rewriteAssistantBody = async (
+			seq: number,
+			content: McReplacementContent,
+		) => {
 			if (failNext) {
 				failNext = false;
 				throw new StoreUnavailableError("surface write failed");
@@ -186,15 +218,24 @@ describe("replay and failure behaviour", () => {
 		const left = seedMixedSession(host, "s-left");
 		const right = seedMixedSession(host, "s-right");
 		const managedEdits = new ManagedEdits(host);
-		const outcome = await runNodeOpsInBracket(managedEdits, left, projectionOf(host, "s-left"), {
-			kind: "drop",
-			changeId: "mc-drop-isolation",
-			mcSession: "s-left",
-			decision: () => Promise.resolve(null),
-			requests: () => [{ messageId: "a1", content: DROP }],
-		});
+		const outcome = await runNodeOpsInBracket(
+			managedEdits,
+			left,
+			projectionOf(host, "s-left"),
+			{
+				kind: "drop",
+				changeId: "mc-drop-isolation",
+				mcSession: "s-left",
+				decision: () => Promise.resolve(null),
+				requests: () => [{ messageId: "a1", content: DROP }],
+			},
+		);
 		expect(outcome.applied).toHaveLength(1);
-		expect(left.logRecords().find((record) => record.messageId === "a1")!.text).toBe("[dropped §1§]");
-		expect(right.logRecords().find((record) => record.messageId === "a1")!.text).toBe("assistant answer");
+		expect(
+			left.logRecords().find((record) => record.messageId === "a1")!.text,
+		).toBe("[dropped §1§]");
+		expect(
+			right.logRecords().find((record) => record.messageId === "a1")!.text,
+		).toBe("assistant answer");
 	});
 });

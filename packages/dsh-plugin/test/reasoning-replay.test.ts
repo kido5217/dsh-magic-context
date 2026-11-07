@@ -18,7 +18,11 @@
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { createLiveHome, type LiveHome } from "./live-home.js";
-import { MOCK_API_KEY_ENV, mockProviderEnv, startMockProvider } from "./mock-provider.js";
+import {
+	MOCK_API_KEY_ENV,
+	mockProviderEnv,
+	startMockProvider,
+} from "./mock-provider.js";
 
 const provider = startMockProvider();
 let home: LiveHome | undefined;
@@ -44,9 +48,13 @@ describe("reasoning replay", () => {
 			{ thinking: "private chain of thought", text: "first answer" },
 			{ text: "second answer" },
 		]);
-		const first = await home.runHeadlessAsync("first question", { env: mockProviderEnv() });
+		const first = await home.runHeadlessAsync("first question", {
+			env: mockProviderEnv(),
+		});
 		expect(first.status).toBe(0);
-		const sessionId = first.events.find((event) => event["type"] === "session")?.["sessionId"];
+		const sessionId = first.events.find(
+			(event) => event["type"] === "session",
+		)?.["sessionId"];
 		expect(typeof sessionId).toBe("string");
 
 		const second = await home.runHeadlessAsync("second question", {
@@ -59,10 +67,18 @@ describe("reasoning replay", () => {
 		// request has no assistant message yet).
 		const withHistory = provider.requests.findIndex((request) => {
 			const messages = request.body["messages"];
-			return Array.isArray(messages) && messages.some((message) => (message as { role?: string }).role === "assistant");
+			return (
+				Array.isArray(messages) &&
+				messages.some(
+					(message) => (message as { role?: string }).role === "assistant",
+				)
+			);
 		});
 		expect(withHistory).toBeGreaterThanOrEqual(0);
-		const messages = provider.requests[withHistory]!.body["messages"] as { role: string; content?: unknown }[];
+		const messages = provider.requests[withHistory]!.body["messages"] as {
+			role: string;
+			content?: unknown;
+		}[];
 		const assistant = messages.find((message) => message.role === "assistant");
 		expect(assistant).toBeDefined();
 		// The body is replayed verbatim, and so is the provider's reasoning:

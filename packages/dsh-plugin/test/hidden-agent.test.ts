@@ -29,7 +29,9 @@ describe("hidden agent", () => {
 				cwd: process.cwd(),
 				origin: "subagent",
 				delegationDepth: 1,
-				parentSession: "session-user" as NonNullable<CreateAgentOptions["meta"]>["parentSession"],
+				parentSession: "session-user" as NonNullable<
+					CreateAgentOptions["meta"]
+				>["parentSession"],
 			},
 		};
 		expect(options.parentAgent).toBeUndefined();
@@ -37,7 +39,12 @@ describe("hidden agent", () => {
 	});
 
 	test("a maintenance session classifies as a subagent and takes the narrow rules", () => {
-		const role = classifySession({ id: "mc-maintenance-1", origin: "subagent", parentSession: "session-user", delegationDepth: 1 });
+		const role = classifySession({
+			id: "mc-maintenance-1",
+			origin: "subagent",
+			parentSession: "session-user",
+			delegationDepth: 1,
+		});
 		expect(role).toBe("subagent");
 		const rules = rulesForRole(role);
 		expect(rules.role).toBe("subagent");

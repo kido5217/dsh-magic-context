@@ -264,6 +264,24 @@ describe("V3 live", () => {
 		// starts (restart rediscovery freezes the pre-seed cursors), then the
 		// parent seeds mid-run — the step-2 pass must surface the writes in
 		// the volatile delta while the baseline bytes hold still.
+		// Give the second run its own held-open turn: the tool reply's
+		// delay keeps the child inside turn 1 while the parent seeds, so
+		// the step-2 rebuild deterministically sees the mid-run writes.
+		provider.script([
+			{
+				toolCalls: [
+					{
+						name: "read",
+						arguments: JSON.stringify({
+							path: join(projectDir, "ARCHITECTURE.md"),
+						}),
+					},
+				],
+				promptTokens: 600,
+				delayMs: 3_000,
+			},
+			{ text: "noted", promptTokens: 600 },
+		]);
 		const seen = provider.requests.length;
 		const secondPromise = home!.runHeadlessAsync("continue", {
 			cwd: projectDir,

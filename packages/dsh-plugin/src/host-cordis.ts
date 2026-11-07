@@ -399,6 +399,10 @@ export function createCordisHost(
 			return ctx.on("agent/pre-step", (payload, next) =>
 				(async (): Promise<AgentPreStepDecision> => {
 					const sessionId = payload.agent.session.id;
+					// Hidden maintenance children are never managed: no head, no
+					// snapshot, no lanes — the dreamer owns those sessions.
+					if (sessionId.startsWith("session-mc-maint-"))
+						return (await next()) as AgentPreStepDecision;
 					let imageInput = false;
 					if (payload.modelSelection !== undefined) {
 						// Resolve the routed model's capacity for band pricing

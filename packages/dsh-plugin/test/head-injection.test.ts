@@ -6,18 +6,22 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
-import { setHarness } from "@magic-context/core/shared/harness";
+import { join } from "node:path";
 import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
 import { appendCompartments } from "@magic-context/core/features/magic-context/compartment-storage";
-import { insertMemory } from "@magic-context/core/features/magic-context/memory/storage-memory";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
-import { mountAdapter, type AdapterHandle } from "../src/index.js";
-import { readHeadCursors } from "../src/surface/head-cursors.js";
+import { insertMemory } from "@magic-context/core/features/magic-context/memory/storage-memory";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
+import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
+import { setHarness } from "@magic-context/core/shared/harness";
+import { type AdapterHandle, mountAdapter } from "../src/index.js";
 import type { DshLogMessageRecord } from "../src/surface/dsh-session-log.js";
+import { readHeadCursors } from "../src/surface/head-cursors.js";
 import { TestDshHost } from "./double.js";
 
 let db: ContextDatabase;
@@ -26,7 +30,10 @@ let projectDir: string;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 	expect(db).toBeTruthy();
 	projectDir = mkdtempSync(join(tmpdir(), "mc-head-proj-"));
 });
@@ -58,17 +65,43 @@ describe("head renders the injection pipeline (T042)", () => {
 			},
 		]);
 		const records: readonly DshLogMessageRecord[] = [
-			{ seq: 1, messageId: "m-1", role: "user", text: "tell me about flight", createdAt: Date.UTC(2026, 0, 10) },
-			{ seq: 2, messageId: "m-2", role: "assistant", text: "flight is managed glide", createdAt: Date.UTC(2026, 0, 12) },
-			{ seq: 3, messageId: "m-3", role: "user", text: "fascinating", createdAt: Date.UTC(2026, 0, 12) },
+			{
+				seq: 1,
+				messageId: "m-1",
+				role: "user",
+				text: "tell me about flight",
+				createdAt: Date.UTC(2026, 0, 10),
+			},
+			{
+				seq: 2,
+				messageId: "m-2",
+				role: "assistant",
+				text: "flight is managed glide",
+				createdAt: Date.UTC(2026, 0, 12),
+			},
+			{
+				seq: 3,
+				messageId: "m-3",
+				role: "user",
+				text: "fascinating",
+				createdAt: Date.UTC(2026, 0, 12),
+			},
 		];
 
 		const host = new TestDshHost();
 		const config = MagicContextConfigSchema.parse({});
-		handle = mountAdapter(host, config, db, { readSessionLog: () => records, projectDir });
+		handle = mountAdapter(host, config, db, {
+			readSessionLog: () => records,
+			projectDir,
+		});
 		host.addSession({ id: "s-head" });
-		host.pressureReadings.set("s-head", { pressureTokens: 1_000, contextWindow: 100_000 });
-		expect(await host.firePreStep({ sessionId: "s-head", turn: 1, step: 1 })).toBe("enter");
+		host.pressureReadings.set("s-head", {
+			pressureTokens: 1_000,
+			contextWindow: 100_000,
+		});
+		expect(
+			await host.firePreStep({ sessionId: "s-head", turn: 1, step: 1 }),
+		).toBe("enter");
 
 		const head = handle.head.peek("s-head");
 		expect(head).toBeDefined();

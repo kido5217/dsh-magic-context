@@ -58,7 +58,10 @@ describe("compaction binding", () => {
 	});
 
 	test("the shipped bundle disables compaction-basic", () => {
-		const patch = readFileSync(join(import.meta.dir, "..", "cordis.patch.yml"), "utf8");
+		const patch = readFileSync(
+			join(import.meta.dir, "..", "cordis.patch.yml"),
+			"utf8",
+		);
 		expect(patch).toContain("- id: compaction-basic");
 		expect(patch).toMatch(/compaction-basic[\s\S]{0,120}disabled:\s*true/);
 	});

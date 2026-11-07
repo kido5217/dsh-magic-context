@@ -137,7 +137,7 @@ describe("emergency drop", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
-			projectDir: process.cwd(),
+				projectDir: process.cwd(),
 				pressure: {
 					pressureTokens: 9_500,
 					contextWindow: 10_000,
@@ -261,7 +261,7 @@ describe("caveman compression", () => {
 				config: enabled,
 				db,
 				protectedMessageIds: new Set(),
-			projectDir: process.cwd(),
+				projectDir: process.cwd(),
 				lanes: [cavemanLane],
 				gates: new LaneGates(),
 			});
@@ -312,7 +312,7 @@ describe("note nudge lane", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
-			projectDir: process.cwd(),
+				projectDir: process.cwd(),
 				lanes: [noteNudgeLane],
 				gates: new LaneGates(),
 			});
@@ -376,7 +376,7 @@ describe("ctx_reduce channel-2 nudge", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
-			projectDir: process.cwd(),
+				projectDir: process.cwd(),
 				lanes: [reduceNudgeLane],
 				gates: new LaneGates(),
 			});
@@ -483,7 +483,7 @@ describe("synthetic todo lane", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
-			projectDir: process.cwd(),
+				projectDir: process.cwd(),
 				todo: host.todoState("s-todo"),
 				lanes: [todoLane],
 				gates: new LaneGates(),

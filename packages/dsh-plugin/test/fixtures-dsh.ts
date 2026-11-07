@@ -14,15 +14,15 @@ import { Context } from "@deepseek-ai/cordis";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
 import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type {
+	CompactionLifecycleEvent,
 	DshHost,
 	DshSession,
 	DshSessionHeaderFacts,
-	CompactionLifecycleEvent,
 	PostToolInfo,
 	PostToolVerdict,
-	PressureReading,
 	PreStepDecision,
 	PreStepInfo,
+	PressureReading,
 	RequestErrorInfo,
 	TodoState,
 } from "../src/host.js";
@@ -49,7 +49,8 @@ export class FakeMcSession implements DshSession {
 	) {
 		this.id = header.id;
 		this.surface = [...initialSurface];
-		this.nextSeq = initialSurface.length > 0 ? Math.max(...initialSurface) + 1 : 0;
+		this.nextSeq =
+			initialSurface.length > 0 ? Math.max(...initialSurface) + 1 : 0;
 	}
 
 	surfaceNodes(): readonly number[] {
@@ -64,10 +65,17 @@ export class FakeMcSession implements DshSession {
 		return this.logEntries.filter((entry) => entry.type === type);
 	}
 
-	async replaceSurface(_replacement: McReplacementContent, startSeq: number, endSeq: number, shadowedSeqs: readonly number[]): Promise<{ replacementSeq: number }> {
-		if (shadowedSeqs.length === 0) throw new Error("replace requires at least one shadowed node");
+	async replaceSurface(
+		_replacement: McReplacementContent,
+		startSeq: number,
+		endSeq: number,
+		shadowedSeqs: readonly number[],
+	): Promise<{ replacementSeq: number }> {
+		if (shadowedSeqs.length === 0)
+			throw new Error("replace requires at least one shadowed node");
 		for (const seq of shadowedSeqs) {
-			if (!this.surface.includes(seq)) throw new Error(`shadowed seq ${seq} is not a current surface node`);
+			if (!this.surface.includes(seq))
+				throw new Error(`shadowed seq ${seq} is not a current surface node`);
 		}
 		if (!this.surface.includes(startSeq) || !this.surface.includes(endSeq)) {
 			throw new Error("replacement endpoints must be current surface nodes");
@@ -79,22 +87,44 @@ export class FakeMcSession implements DshSession {
 		return { replacementSeq };
 	}
 
-	async rewriteToolResult(seq: number, _content: McReplacementContent): Promise<{ replacementSeq: number }> {
-		if (!this.surface.includes(seq)) throw new Error(`tool-result rewrite refused: seq ${seq} is not a current surface node`);
+	async rewriteToolResult(
+		seq: number,
+		_content: McReplacementContent,
+	): Promise<{ replacementSeq: number }> {
+		if (!this.surface.includes(seq))
+			throw new Error(
+				`tool-result rewrite refused: seq ${seq} is not a current surface node`,
+			);
 		const replacementSeq = this.nextSeq++;
-		this.surface = this.surface.map((node) => (node === seq ? replacementSeq : node));
+		this.surface = this.surface.map((node) =>
+			node === seq ? replacementSeq : node,
+		);
 		return { replacementSeq };
 	}
 
-	async rewriteUserMessage(seq: number, _content: McReplacementContent): Promise<{ replacementSeq: number }> {
-		if (!this.surface.includes(seq)) throw new Error(`user rewrite refused: seq ${seq} is not a current surface node`);
+	async rewriteUserMessage(
+		seq: number,
+		_content: McReplacementContent,
+	): Promise<{ replacementSeq: number }> {
+		if (!this.surface.includes(seq))
+			throw new Error(
+				`user rewrite refused: seq ${seq} is not a current surface node`,
+			);
 		const replacementSeq = this.nextSeq++;
-		this.surface = this.surface.map((node) => (node === seq ? replacementSeq : node));
+		this.surface = this.surface.map((node) =>
+			node === seq ? replacementSeq : node,
+		);
 		return { replacementSeq };
 	}
 
-	async rewriteAssistantBody(seq: number, _content: McReplacementContent): Promise<{ eventSeq: number }> {
-		if (!this.surface.includes(seq)) throw new Error(`assistant rewrite refused: seq ${seq} is not a current surface node`);
+	async rewriteAssistantBody(
+		seq: number,
+		_content: McReplacementContent,
+	): Promise<{ eventSeq: number }> {
+		if (!this.surface.includes(seq))
+			throw new Error(
+				`assistant rewrite refused: seq ${seq} is not a current surface node`,
+			);
 		const eventSeq = this.nextSeq++;
 		return { eventSeq };
 	}
@@ -105,13 +135,18 @@ export class FakeMcSession implements DshSession {
 		return { seq };
 	}
 
-	async appendLogEvent(type: "mc/manage-start" | "mc/manage-end", data: Record<string, unknown>): Promise<{ seq: number }> {
+	async appendLogEvent(
+		type: "mc/manage-start" | "mc/manage-end",
+		data: Record<string, unknown>,
+	): Promise<{ seq: number }> {
 		const seq = this.nextSeq++;
 		this.logEntries.push({ type, data, seq });
 		return { seq };
 	}
 
-	async appendCompactionEvent(_event: CompactionLifecycleEvent): Promise<{ seq: number }> {
+	async appendCompactionEvent(
+		_event: CompactionLifecycleEvent,
+	): Promise<{ seq: number }> {
 		const seq = this.nextSeq++;
 		this.compactionSeqs.push(seq);
 		return { seq };
@@ -127,7 +162,9 @@ export class McHost implements DshHost {
 	readonly sessions = new Map<string, FakeMcSession>();
 	readonly tools = new Map<string, ToolDefinition>();
 	readonly registrationOrder: string[] = [];
-	private readonly preStepListeners = new Set<(info: PreStepInfo) => PreStepDecision | Promise<PreStepDecision>>();
+	private readonly preStepListeners = new Set<
+		(info: PreStepInfo) => PreStepDecision | Promise<PreStepDecision>
+	>();
 	pressureReadings = new Map<string, PressureReading | undefined>();
 	llmCalls = 0;
 
@@ -135,7 +172,10 @@ export class McHost implements DshHost {
 		this.ctx = new Context();
 	}
 
-	addSession(header: DshSessionHeaderFacts, initialSurface?: readonly number[]): FakeMcSession {
+	addSession(
+		header: DshSessionHeaderFacts,
+		initialSurface?: readonly number[],
+	): FakeMcSession {
 		const session = new FakeMcSession(header, initialSurface);
 		this.sessions.set(header.id, session);
 		return session;
@@ -153,7 +193,10 @@ export class McHost implements DshHost {
 		this.llmCalls += 1;
 		return {
 			[Symbol.asyncIterator]: (): AsyncIterator<StreamChunk> => ({
-				next: async () => ({ done: true as const, value: undefined as unknown as StreamChunk }),
+				next: async () => ({
+					done: true as const,
+					value: undefined as unknown as StreamChunk,
+				}),
 			}),
 		};
 	}
@@ -169,7 +212,9 @@ export class McHost implements DshHost {
 		};
 	}
 
-	onPreStep(listener: (info: PreStepInfo) => PreStepDecision | Promise<PreStepDecision>): () => void {
+	onPreStep(
+		listener: (info: PreStepInfo) => PreStepDecision | Promise<PreStepDecision>,
+	): () => void {
 		this.preStepListeners.add(listener);
 		return () => {
 			this.preStepListeners.delete(listener);
@@ -180,11 +225,17 @@ export class McHost implements DshHost {
 		return undefined;
 	}
 
-	onPostToolExecute(_listener: (info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>): () => void {
+	onPostToolExecute(
+		_listener: (
+			info: PostToolInfo,
+		) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>,
+	): () => void {
 		return () => {};
 	}
 
-	onRequestError(_listener: (info: RequestErrorInfo) => boolean | Promise<boolean>): () => void {
+	onRequestError(
+		_listener: (info: RequestErrorInfo) => boolean | Promise<boolean>,
+	): () => void {
 		return () => {};
 	}
 
@@ -194,7 +245,10 @@ export class McHost implements DshHost {
 }
 
 /** Minimal tool execution context (identity + live signal, no-op deferrals). */
-export function execContext(name: string, args: Record<string, unknown>): ToolRunContext {
+export function execContext(
+	name: string,
+	args: Record<string, unknown>,
+): ToolRunContext {
 	return {
 		callId: `test-${name}-${Math.random().toString(36).slice(2, 10)}`,
 		name,
@@ -206,12 +260,18 @@ export function execContext(name: string, args: Record<string, unknown>): ToolRu
 }
 
 /** Execute a registered tool; its canonical output must be the reply string. */
-export async function callTool(host: McHost, name: string, args: Record<string, unknown>): Promise<string> {
+export async function callTool(
+	host: McHost,
+	name: string,
+	args: Record<string, unknown>,
+): Promise<string> {
 	const definition = host.tools.get(name);
 	if (!definition) throw new Error(`tool '${name}' is not registered`);
 	const value = await definition.execute(args, execContext(name, args));
 	if (typeof value !== "string") {
-		throw new Error(`tool '${name}' returned non-string canonical value: ${String(value)}`);
+		throw new Error(
+			`tool '${name}' returned non-string canonical value: ${String(value)}`,
+		);
 	}
 	return value;
 }
@@ -222,6 +282,12 @@ export async function callTool(host: McHost, name: string, args: Record<string, 
  * most one open bracket per session.
  */
 export function openBrackets(session: FakeMcSession): FakeLogEntry[] {
-	const ended = new Set(session.eventsOf("mc/manage-end").map((entry) => String(entry.data.changeId)));
-	return session.eventsOf("mc/manage-start").filter((entry) => !ended.has(String(entry.data.changeId)));
+	const ended = new Set(
+		session
+			.eventsOf("mc/manage-end")
+			.map((entry) => String(entry.data.changeId)),
+	);
+	return session
+		.eventsOf("mc/manage-start")
+		.filter((entry) => !ended.has(String(entry.data.changeId)));
 }

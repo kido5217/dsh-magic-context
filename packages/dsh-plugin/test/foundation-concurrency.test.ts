@@ -12,19 +12,29 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { getOrCreateSessionMeta, updateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
+import {
+	getOrCreateSessionMeta,
+	updateSessionMeta,
+} from "@magic-context/core/features/magic-context/storage-meta-session";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
-import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
-import { mountAdapter, type AdapterHandle } from "../src/index.js";
+import { type AdapterHandle, mountAdapter } from "../src/index.js";
 import { TestDshHost } from "./double.js";
 
 let db: ContextDatabase;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 	expect(db).toBeTruthy();
 });
 
@@ -32,11 +42,17 @@ afterAll(async () => {
 	await closeDatabase();
 });
 
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+const tick = (): Promise<void> =>
+	new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Bracket order observed in the durable log: ["start:c1", "end:c1", …]. */
-function bracketSequence(log: readonly { type: string; data: Record<string, unknown> }[]): string[] {
-	return log.map((entry) => `${entry.type === "mc/manage-start" ? "start" : "end"}:${entry.data.changeId}`);
+function bracketSequence(
+	log: readonly { type: string; data: Record<string, unknown> }[],
+): string[] {
+	return log.map(
+		(entry) =>
+			`${entry.type === "mc/manage-start" ? "start" : "end"}:${entry.data.changeId}`,
+	);
 }
 
 function assertNoInterleaving(sequence: string[]): void {
@@ -57,7 +73,11 @@ function assertNoInterleaving(sequence: string[]): void {
 describe("managed-change serialization", () => {
 	test("two runManagedChange calls on one session never interleave brackets", async () => {
 		const host = new TestDshHost();
-		const handle: AdapterHandle = mountAdapter(host, MagicContextConfigSchema.parse({}), db);
+		const handle: AdapterHandle = mountAdapter(
+			host,
+			MagicContextConfigSchema.parse({}),
+			db,
+		);
 		const session = host.addSession({ id: "s-serial" }, [0, 1, 2, 3, 4]);
 		handle.mapping.upsert({ id: "s-serial" });
 
@@ -68,24 +88,44 @@ describe("managed-change serialization", () => {
 
 		// Launch both concurrently; the first parks inside its decision step so
 		// the second MUST queue behind the lock, not slip into the bracket.
-		const first = handle.managedEdits.runManagedChange("drop", "c1", "s-serial", {
-			decision: async () => {
-				await firstBlocked;
-				return { targets: [1, 2] as const };
+		const first = handle.managedEdits.runManagedChange(
+			"drop",
+			"c1",
+			"s-serial",
+			{
+				decision: async () => {
+					await firstBlocked;
+					return { targets: [1, 2] as const };
+				},
+				effect: async (decision) => {
+					const { replacementSeq } = await session.replaceSurface(
+						[{ type: "text", text: "fold-1" }],
+						decision.targets[0],
+						decision.targets[1],
+						decision.targets,
+					);
+					return { replacementSeq, shadowedSeqs: decision.targets };
+				},
 			},
-			effect: async (decision) => {
-				const { replacementSeq } = await session.replaceSurface([{ type: "text", text: "fold-1" }], decision.targets[0], decision.targets[1], decision.targets);
-				return { replacementSeq, shadowedSeqs: decision.targets };
-			},
-		});
+		);
 		await tick();
-		const second = handle.managedEdits.runManagedChange("fold", "c2", "s-serial", {
-			decision: async () => ({ targets: [0, 3] as const }),
-			effect: async (decision) => {
-				const { replacementSeq } = await session.replaceSurface([{ type: "text", text: "fold-2" }], decision.targets[0], decision.targets[1], decision.targets);
-				return { replacementSeq, shadowedSeqs: decision.targets };
+		const second = handle.managedEdits.runManagedChange(
+			"fold",
+			"c2",
+			"s-serial",
+			{
+				decision: async () => ({ targets: [0, 3] as const }),
+				effect: async (decision) => {
+					const { replacementSeq } = await session.replaceSurface(
+						[{ type: "text", text: "fold-2" }],
+						decision.targets[0],
+						decision.targets[1],
+						decision.targets,
+					);
+					return { replacementSeq, shadowedSeqs: decision.targets };
+				},
 			},
-		});
+		);
 		await tick();
 		releaseFirst();
 		const [s1, s2] = await Promise.all([first, second]);
@@ -106,7 +146,11 @@ describe("managed-change serialization", () => {
 describe("cross-harness store concurrency", () => {
 	test("adapter writes + foreign-harness writer complete with intact rows", async () => {
 		const host = new TestDshHost();
-		const handle: AdapterHandle = mountAdapter(host, MagicContextConfigSchema.parse({}), db);
+		const handle: AdapterHandle = mountAdapter(
+			host,
+			MagicContextConfigSchema.parse({}),
+			db,
+		);
 		const session = host.addSession({ id: "s-contend" }, [0, 1, 2, 3]);
 		handle.mapping.upsert({ id: "s-contend" });
 
@@ -128,12 +172,21 @@ describe("cross-harness store concurrency", () => {
 			["m1", "m2"].map((changeId, index) =>
 				handle.managedEdits.runManagedChange("drop", changeId, "s-contend", {
 					decision: async () => {
-						updateSessionMeta(db, "s-contend", { lastInputTokens: (index + 1) * 1_000 });
+						updateSessionMeta(db, "s-contend", {
+							lastInputTokens: (index + 1) * 1_000,
+						});
 						await tick();
-						return { targets: index === 0 ? ([0, 1] as const) : ([2, 3] as const) };
+						return {
+							targets: index === 0 ? ([0, 1] as const) : ([2, 3] as const),
+						};
 					},
 					effect: async (decision) => {
-						const { replacementSeq } = await session.replaceSurface([{ type: "text", text: `fold-${changeId}` }], decision.targets[0], decision.targets[1], decision.targets);
+						const { replacementSeq } = await session.replaceSurface(
+							[{ type: "text", text: `fold-${changeId}` }],
+							decision.targets[0],
+							decision.targets[1],
+							decision.targets,
+						);
 						return { replacementSeq, shadowedSeqs: decision.targets };
 					},
 				}),
@@ -150,7 +203,9 @@ describe("cross-harness store concurrency", () => {
 		const adapter = getOrCreateSessionMeta(db, "s-contend");
 		expect(adapter.isSubagent).toBe(false);
 		expect(adapter.lastInputTokens).toBe(2_000); // last managed decision won
-		const row = db.prepare("SELECT harness FROM session_meta WHERE session_id = ?").get("s-contend") as { harness: string };
+		const row = db
+			.prepare("SELECT harness FROM session_meta WHERE session_id = ?")
+			.get("s-contend") as { harness: string };
 		expect(row.harness).toBe("dsh");
 
 		// No lost decisions: both brackets closed cleanly.

@@ -22,21 +22,34 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { getPendingOps, queuePendingOp, removePendingOp } from "@magic-context/core/features/magic-context/storage-ops";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
+import {
+	getPendingOps,
+	queuePendingOp,
+	removePendingOp,
+} from "@magic-context/core/features/magic-context/storage-ops";
 import { insertTag } from "@magic-context/core/features/magic-context/storage-tags";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import type { PendingOp } from "@magic-context/core/features/magic-context/types";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { SessionMapping } from "../src/sessions/mapping.js";
+import type {
+	McManagedChangeKind,
+	McReplacementContent,
+} from "../src/surface/events.js";
 import { ManagedEdits } from "../src/surface/managed-edits.js";
-import type { McManagedChangeKind, McReplacementContent } from "../src/surface/events.js";
-import type { PendingOp } from "@magic-context/core/features/magic-context/types";
-import { FakeMcSession, McHost, openBrackets } from "./fixtures-dsh.js";
+import { type FakeMcSession, McHost, openBrackets } from "./fixtures-dsh.js";
 
 const SESSION = "us1-crash-window-7741";
 const CHANGE_ID = "chg-crash-7741";
 const INITIAL_SURFACE = [0, 1, 2, 3] as const;
-const REPLACEMENT: McReplacementContent = [{ type: "text", text: "[dropped §1-2§]" }];
+const REPLACEMENT: McReplacementContent = [
+	{ type: "text", text: "[dropped §1-2§]" },
+];
 
 let db: ContextDatabase;
 let host: McHost;
@@ -44,7 +57,9 @@ let session: FakeMcSession;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db") }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+	}))!;
 	expect(db).toBeTruthy();
 });
 
@@ -53,27 +68,34 @@ afterAll(async () => {
 });
 
 /** One reconcile pass, the way crash-resume must run it after a restart. */
-async function reconcile(edits: ManagedEdits): Promise<"applied" | "nothing-to-apply"> {
+async function reconcile(
+	edits: ManagedEdits,
+): Promise<"applied" | "nothing-to-apply"> {
 	const open = openBrackets(session);
 	// Data-model invariant: at most one unapplied decision per session.
 	expect(open.length).toBeLessThanOrEqual(1);
 	if (open.length === 0) return "nothing-to-apply";
 	const start = open[0]!;
 	const changeId = String(start.data.changeId);
-	await edits.runManagedChange(start.data.kind as McManagedChangeKind, changeId, SESSION, {
-		decision: async () => getPendingOps(db, SESSION),
-		effect: async (ops: PendingOp[]) => {
-			const targets = ops.map((op) => op.tagId).sort((a, b) => a - b);
-			const { replacementSeq } = await session.replaceSurface(
-				REPLACEMENT,
-				targets[0]!,
-				targets[targets.length - 1]!,
-				targets,
-			);
-			for (const op of ops) removePendingOp(db, SESSION, op.tagId);
-			return { replacementSeq, shadowedSeqs: targets };
+	await edits.runManagedChange(
+		start.data.kind as McManagedChangeKind,
+		changeId,
+		SESSION,
+		{
+			decision: async () => getPendingOps(db, SESSION),
+			effect: async (ops: PendingOp[]) => {
+				const targets = ops.map((op) => op.tagId).sort((a, b) => a - b);
+				const { replacementSeq } = await session.replaceSurface(
+					REPLACEMENT,
+					targets[0]!,
+					targets[targets.length - 1]!,
+					targets,
+				);
+				for (const op of ops) removePendingOp(db, SESSION, op.tagId);
+				return { replacementSeq, shadowedSeqs: targets };
+			},
 		},
-	});
+	);
 	return "applied";
 }
 
@@ -143,12 +165,21 @@ describe("crash window: decision written, effect never landed (V7a)", () => {
 		expect(await reconcile(edits)).toBe("applied");
 		const ends = session.eventsOf("mc/manage-end");
 		expect(ends.length).toBe(1);
-		expect(ends[0]!.data).toMatchObject({ changeId: CHANGE_ID, kind: "drop", shadowedSeqs: [1, 2] });
+		expect(ends[0]!.data).toMatchObject({
+			changeId: CHANGE_ID,
+			kind: "drop",
+			shadowedSeqs: [1, 2],
+		});
 		const after = session.surfaceNodes();
 		const replacementSeq = Number(ends[0]!.data.replacementSeq);
 		expect(after).toEqual([0, 3, replacementSeq]);
 		// Exactly one replacement node — everything not on the initial surface.
-		expect(after.filter((seq) => !INITIAL_SURFACE.includes(seq as (typeof INITIAL_SURFACE)[number]))).toEqual([replacementSeq]);
+		expect(
+			after.filter(
+				(seq) =>
+					!INITIAL_SURFACE.includes(seq as (typeof INITIAL_SURFACE)[number]),
+			),
+		).toEqual([replacementSeq]);
 		// (c) both shadowed seqs are gone exactly once; bracket closed; queue drained.
 		expect(openBrackets(session).length).toBe(0);
 		expect(getPendingOps(db, SESSION)).toEqual([]);
@@ -199,10 +230,16 @@ describe("crash window: decision written, effect never landed (V7a)", () => {
 				effect: async (decision: { targets: number[] }) => {
 					for (const tagId of decision.targets) {
 						const seq = Number(String(tagId).slice(-1)); // tag 11 ⇒ node 1, 12 ⇒ node 2
-						await session.rewriteToolResult(seq, [{ type: "text", text: `[dropped §${tagId}§]` }]);
+						await session.rewriteToolResult(seq, [
+							{ type: "text", text: `[dropped §${tagId}§]` },
+						]);
 						removePendingOp(db, crashId, tagId);
 					}
-					return { shadowedSeqs: decision.targets.map((tagId) => Number(String(tagId).slice(-1))) };
+					return {
+						shadowedSeqs: decision.targets.map((tagId) =>
+							Number(String(tagId).slice(-1)),
+						),
+					};
 				},
 			});
 

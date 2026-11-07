@@ -16,19 +16,23 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
-import { insertTag } from "@magic-context/core/features/magic-context/storage-tags";
-import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
-import { setHarness } from "@magic-context/core/shared/harness";
 import { insertMemory } from "@magic-context/core/features/magic-context/memory";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
+import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
+import { insertTag } from "@magic-context/core/features/magic-context/storage-tags";
 import { setRawMessageProvider } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import type { RawMessage } from "@magic-context/core/hooks/magic-context/read-session-raw";
+import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
+import { setHarness } from "@magic-context/core/shared/harness";
 import { createPromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
-import { registerMagicContextToolsDsh } from "../src/tools/index.js";
 import type { DshHost } from "../src/host.js";
-import { callTool, fixtureProvider, FakeToolHost } from "./double-stub.js";
+import { registerMagicContextToolsDsh } from "../src/tools/index.js";
+import { callTool, FakeToolHost, fixtureProvider } from "./double-stub.js";
 
 const SESSION = "us2-session-dsh";
 /** A session owned by ANOTHER harness on the same project (SC-003 fixture). */
@@ -41,27 +45,41 @@ const TEXT_1 =
 const TOOL_INPUT = {
 	cwd: "/srv/app",
 	command: "bun test --parallel=4",
-	env: { LANG: "C.UTF-8", "LC_ALL": "" },
+	env: { LANG: "C.UTF-8", LC_ALL: "" },
 } as const;
 const TOOL_INPUT_JSON =
 	'{"cwd":"/srv/app","command":"bun test --parallel=4","env":{"LANG":"C.UTF-8","LC_ALL":""}}';
 const TOOL_OUTPUT = " 21 pass\n  0 fail  \n\n(done)\n";
 
 const RAW_MESSAGES: RawMessage[] = [
-	{ ordinal: 1, id: "m1", role: "user", parts: [{ type: "text", text: TEXT_1 }] },
+	{
+		ordinal: 1,
+		id: "m1",
+		role: "user",
+		parts: [{ type: "text", text: TEXT_1 }],
+	},
 	{
 		ordinal: 2,
 		id: "m2",
 		role: "assistant",
-		parts: [{ type: "tool_use", name: "bash", id: "call-42", input: TOOL_INPUT }],
+		parts: [
+			{ type: "tool_use", name: "bash", id: "call-42", input: TOOL_INPUT },
+		],
 	},
 	{
 		ordinal: 3,
 		id: "m3",
 		role: "user",
-		parts: [{ type: "tool_result", tool_use_id: "call-42", content: TOOL_OUTPUT }],
+		parts: [
+			{ type: "tool_result", tool_use_id: "call-42", content: TOOL_OUTPUT },
+		],
 	},
-	{ ordinal: 4, id: "m4", role: "assistant", parts: [{ type: "text", text: "Rebase done; pushed." }] },
+	{
+		ordinal: 4,
+		id: "m4",
+		role: "assistant",
+		parts: [{ type: "text", text: "Rebase done; pushed." }],
+	},
 ];
 
 let db: ContextDatabase;
@@ -73,7 +91,9 @@ const projectDir = mkdtempSync(join(tmpdir(), "dsh-us2-proj-"));
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db") }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+	}))!;
 	expect(db).toBeTruthy();
 
 	// Session rows get harness='dsh' from core stamping (setHarness above);
@@ -81,17 +101,38 @@ beforeAll(async () => {
 	// from another harness on the shared store.
 	getOrCreateSessionMeta(db, SESSION);
 	getOrCreateSessionMeta(db, FOREIGN_SESSION);
-	db.prepare("UPDATE session_meta SET harness = 'opencode' WHERE session_id = ?").run(
-		FOREIGN_SESSION,
-	);
+	db.prepare(
+		"UPDATE session_meta SET harness = 'opencode' WHERE session_id = ?",
+	).run(FOREIGN_SESSION);
 
 	// Tags via core storage (what the harness's transcript tagger would write):
 	// §1 = text part of m1, §2 = the bash tool call (owner m2, result in m3).
-	insertTag(db, SESSION, "m1", "message", new TextEncoder().encode(TEXT_1).length, 1);
-	insertTag(db, SESSION, "call-42", "tool", 128, 2, 0, "bash", TOOL_INPUT_JSON.length, "m2");
+	insertTag(
+		db,
+		SESSION,
+		"m1",
+		"message",
+		new TextEncoder().encode(TEXT_1).length,
+		1,
+	);
+	insertTag(
+		db,
+		SESSION,
+		"call-42",
+		"tool",
+		128,
+		2,
+		0,
+		"bash",
+		TOOL_INPUT_JSON.length,
+		"m2",
+	);
 	insertTag(db, SESSION, "m4", "message", 22, 3);
 
-	unregisterProvider = setRawMessageProvider(SESSION, fixtureProvider(RAW_MESSAGES));
+	unregisterProvider = setRawMessageProvider(
+		SESSION,
+		fixtureProvider(RAW_MESSAGES),
+	);
 	projectIdentity = resolveProjectIdentityForSession(projectDir)!;
 
 	host = new FakeToolHost();
@@ -140,17 +181,20 @@ describe("ctx_* registration", () => {
 
 	test("FR-005: a second (subagent-style) session registers the same five tools", async () => {
 		const subHost = new FakeToolHost();
-		const dispose = registerMagicContextToolsDsh(subHost as unknown as DshHost, {
-			db,
-			sessionId: () => FOREIGN_SESSION,
-			projectDir,
-			protectedTags: 20,
-			promptSurfaceRuntime: createPromptSurfaceRuntime({
-				harness: "dsh",
-				directory: projectDir,
-				warn: () => {},
-			}),
-		});
+		const dispose = registerMagicContextToolsDsh(
+			subHost as unknown as DshHost,
+			{
+				db,
+				sessionId: () => FOREIGN_SESSION,
+				projectDir,
+				protectedTags: 20,
+				promptSurfaceRuntime: createPromptSurfaceRuntime({
+					harness: "dsh",
+					directory: projectDir,
+					warn: () => {},
+				}),
+			},
+		);
 		expect(subHost.registrationOrder).toEqual(host.registrationOrder);
 		// The sessions layer registers a raw provider per session; until it has,
 		// expand fails with a clear retry hint rather than misbehaving.
@@ -171,7 +215,11 @@ describe("ctx_reduce", () => {
 			.prepare(
 				"SELECT tag_id, operation, harness FROM pending_ops WHERE session_id = ? ORDER BY tag_id",
 			)
-			.all(SESSION) as Array<{ tag_id: number; operation: string; harness: string }>;
+			.all(SESSION) as Array<{
+			tag_id: number;
+			operation: string;
+			harness: string;
+		}>;
 		expect(rows.map((row) => [row.tag_id, row.operation])).toEqual([
 			[1, "drop"],
 			[2, "drop"],
@@ -228,19 +276,28 @@ describe("ctx_note", () => {
 			.prepare(
 				"SELECT session_id, harness, type, status FROM notes WHERE content LIKE 'US2 checkpoint note%'",
 			)
-			.get() as { session_id: string; harness: string; type: string; status: string };
+			.get() as {
+			session_id: string;
+			harness: string;
+			type: string;
+			status: string;
+		};
 		expect(row.session_id).toBe(SESSION);
 		expect(row.harness).toBe("dsh");
 		expect(row.type).toBe("session");
 		expect(row.status).toBe("active");
 
-		const glance = await callTool(host, "ctx_note", { action: "read", note_ids: [] });
+		const glance = await callTool(host, "ctx_note", {
+			action: "read",
+			note_ids: [],
+		});
 		expect(glance).toContain("US2 checkpoint note");
 	});
 });
 
 describe("ctx_memory", () => {
-	const MEMORY_CONTENT = "The release lane pins bun 1.3.x; do not bump minors mid-RC.";
+	const MEMORY_CONTENT =
+		"The release lane pins bun 1.3.x; do not bump minors mid-RC.";
 	let memoryId = 0;
 
 	test("write stores a project-scoped memory attributed to the source session", async () => {
@@ -282,7 +339,9 @@ describe("ctx_memory", () => {
 		expect(reply).toBe(
 			`Memory already exists [ID: ${memoryId}] in PROJECT_RULES (seen count incremented).`,
 		);
-		const row = db.prepare("SELECT seen_count AS n FROM memories WHERE id = ?").get(memoryId) as {
+		const row = db
+			.prepare("SELECT seen_count AS n FROM memories WHERE id = ?")
+			.get(memoryId) as {
 			n: number;
 		};
 		expect(row.n).toBe(2);
@@ -294,7 +353,8 @@ describe("ctx_search (SC-003 cross-harness continuity)", () => {
 		insertMemory(db, {
 			projectPath: projectIdentity,
 			category: "CONFIG_VALUES",
-			content: "The quetzal-cohort-7741 flag gates the shadow backfill rollout.",
+			content:
+				"The quetzal-cohort-7741 flag gates the shadow backfill rollout.",
 			sourceSessionId: FOREIGN_SESSION,
 			sourceType: "agent",
 		});
@@ -307,8 +367,8 @@ describe("ctx_search (SC-003 cross-harness continuity)", () => {
 	});
 
 	test("missing query fails with a model-readable error", async () => {
-		await expect(callTool(host, "ctx_search", { sources: ["memory"] })).rejects.toThrow(
-			/query' is required/,
-		);
+		await expect(
+			callTool(host, "ctx_search", { sources: ["memory"] }),
+		).rejects.toThrow(/query' is required/);
 	});
 });

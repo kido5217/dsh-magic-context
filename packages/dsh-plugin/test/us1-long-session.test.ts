@@ -6,16 +6,33 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { appendCompartments, getCompartments } from "@magic-context/core/features/magic-context/compartment-storage";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import { getActiveTagsBySession } from "@magic-context/core/features/magic-context/storage-tags";
+import {
+	appendCompartments,
+	getCompartments,
+} from "@magic-context/core/features/magic-context/compartment-storage";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { queuePendingOp } from "@magic-context/core/features/magic-context/storage-ops";
-import { buildReplacementContent, renderDroppedText } from "@magic-context/core/hooks/magic-context/apply-operations";
+import { getActiveTagsBySession } from "@magic-context/core/features/magic-context/storage-tags";
+import {
+	buildReplacementContent,
+	renderDroppedText,
+} from "@magic-context/core/hooks/magic-context/apply-operations";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
-import { type AdapterHandle } from "../src/index.js";
+import type { AdapterHandle } from "../src/index.js";
 import { TestDshHost } from "./double.js";
-import { bigMessage, clearPressure, seedSession, setPressure, stepFor, us1Mount } from "./us1-support.js";
+import {
+	bigMessage,
+	clearPressure,
+	seedSession,
+	setPressure,
+	stepFor,
+	us1Mount,
+} from "./us1-support.js";
 
 let db: ContextDatabase;
 let host: TestDshHost;
@@ -23,7 +40,10 @@ let handle: AdapterHandle | undefined;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 });
 
 afterAll(async () => {
@@ -33,7 +53,9 @@ afterAll(async () => {
 });
 
 function tagNumberFor(mcSession: string, messageId: string): number {
-	const tag = getActiveTagsBySession(db, mcSession).find((candidate) => candidate.messageId === messageId);
+	const tag = getActiveTagsBySession(db, mcSession).find(
+		(candidate) => candidate.messageId === messageId,
+	);
 	if (tag === undefined) throw new Error(`no active tag for ${messageId}`);
 	return tag.tagNumber;
 }
@@ -60,11 +82,17 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		expect(session.surfaceNodes()).toContain(1);
 		expect(session.surfaceNodes()).toContain(5);
 		const text = session.logRecords().find((record) => record.seq === 1)!.text;
-		expect(text.startsWith(renderDroppedText(tag, buildReplacementContent(tag)))).toBe(true);
+		expect(
+			text.startsWith(renderDroppedText(tag, buildReplacementContent(tag))),
+		).toBe(true);
 
 		// Bracket discipline: every start has its end, with the shadow info.
-		expect(session.eventsOf("mc/manage-start").length).toBe(session.eventsOf("mc/manage-end").length);
-		const end = session.eventsOf("mc/manage-end").find((entry) => entry.data.kind === "drop")!;
+		expect(session.eventsOf("mc/manage-start").length).toBe(
+			session.eventsOf("mc/manage-end").length,
+		);
+		const end = session
+			.eventsOf("mc/manage-end")
+			.find((entry) => entry.data.kind === "drop")!;
 		expect(end.data.kind).toBe("drop");
 		expect(end.data.shadowedSeqs).toEqual([1]);
 	});
@@ -77,20 +105,33 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		// Protected tail (window 10_000 × 15% budget = 1500 tokens; each
 		// message ≈ 1000 ⇒ only the newest fits verbatim): seqs 0..6 are
 		// reclaimable, and each is edited on its own node.
-		const rewritten = [...session.rewrittenUserMessages.map((edit) => edit.seq), ...session.rewrittenAssistantBodies.map((edit) => edit.seq)].sort((a, b) => a - b);
+		const rewritten = [
+			...session.rewrittenUserMessages.map((edit) => edit.seq),
+			...session.rewrittenAssistantBodies.map((edit) => edit.seq),
+		].sort((a, b) => a - b);
 		expect(rewritten).toEqual([0, 1, 2, 3, 4, 5, 6]);
 		// User nodes are replaced one-for-one (a new user node each); assistant
 		// nodes are edited in place. No span replacement swallows the gap.
-		expect(session.replacements.map((edit) => edit.shadowedSeqs)).toEqual([[0], [2], [4], [6]]);
-		expect(session.rewrittenAssistantBodies.map((edit) => edit.seq)).toEqual([1, 3, 5]);
-		for (const seq of [1, 3, 5, 7]) expect(session.surfaceNodes()).toContain(seq);
+		expect(session.replacements.map((edit) => edit.shadowedSeqs)).toEqual([
+			[0],
+			[2],
+			[4],
+			[6],
+		]);
+		expect(session.rewrittenAssistantBodies.map((edit) => edit.seq)).toEqual([
+			1, 3, 5,
+		]);
+		for (const seq of [1, 3, 5, 7])
+			expect(session.surfaceNodes()).toContain(seq);
 
 		// The head node exists after a managed change landed: guidance text,
 		// appended as its own surface node.
 		const head = handle!.head.peek("s-auto");
 		expect(head).toBeDefined();
 		expect(session.surfaceNodes()).toContain(head!.seq);
-		const headText = session.logRecords().find((record) => record.seq === head!.seq)!.text;
+		const headText = session
+			.logRecords()
+			.find((record) => record.seq === head!.seq)!.text;
 		expect(headText).toContain("ctx_reduce");
 	});
 
@@ -109,7 +150,10 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		clearPressure(host, "s-auto");
 		expect(await host.firePreStep(stepFor("s-auto"))).toBe("enter");
 
-		const kinds = session.eventsOf("mc/manage-start").slice(startsBefore).map((entry) => entry.data.kind);
+		const kinds = session
+			.eventsOf("mc/manage-start")
+			.slice(startsBefore)
+			.map((entry) => entry.data.kind);
 		expect(kinds).toContain("drop"); // (+ a head node if none existed yet)
 		const edit = session.rewrittenAssistantBodies.at(-1)!;
 		expect(edit.seq).toBe(7);
@@ -123,7 +167,15 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		const session = host.sessions.get("s-auto")!;
 		const before = handle!.head.peek("s-auto")!;
 		appendCompartments(db, "s-auto", [
-			{ sequence: 1, startMessage: 0, endMessage: 4, startMessageId: "m0", endMessageId: "m4", title: "Seeded history", content: "Early project work." },
+			{
+				sequence: 1,
+				startMessage: 0,
+				endMessage: 4,
+				startMessageId: "m0",
+				endMessageId: "m4",
+				title: "Seeded history",
+				content: "Early project work.",
+			},
 		]);
 		expect(await host.firePreStep(stepFor("s-auto"))).toBe("enter");
 
@@ -135,9 +187,13 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		expect(head.deltaSeq).not.toBe(before.deltaSeq);
 		expect(session.surfaceNodes()).not.toContain(before.deltaSeq ?? -1);
 		expect(session.surfaceNodes()).toContain(head.deltaSeq!);
-		const deltaText = session.logRecords().find((record) => record.seq === head.deltaSeq)!.text;
+		const deltaText = session
+			.logRecords()
+			.find((record) => record.seq === head.deltaSeq)!.text;
 		expect(deltaText).toContain("Early project work.");
-		const kinds = session.eventsOf("mc/manage-start").map((entry) => entry.data.kind);
+		const kinds = session
+			.eventsOf("mc/manage-start")
+			.map((entry) => entry.data.kind);
 		expect(kinds).toContain("head-refresh");
 	});
 
@@ -164,14 +220,27 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 
 		// Effect: the fold collapsed seqs 0..6 into the fresh baseline node,
 		// with a new placeholder delta after it (T043 pair semantics).
-		expect(session.surfaceNodes()).toEqual([7, handle!.head.peek("s-fold")!.seq, handle!.head.peek("s-fold")!.deltaSeq!]);
-		const kinds = session.eventsOf("mc/manage-start").map((entry) => entry.data.kind);
+		expect(session.surfaceNodes()).toEqual([
+			7,
+			handle!.head.peek("s-fold")!.seq,
+			handle!.head.peek("s-fold")!.deltaSeq!,
+		]);
+		const kinds = session
+			.eventsOf("mc/manage-start")
+			.map((entry) => entry.data.kind);
 		expect(kinds).toEqual(["fold"]);
 	});
 
 	test("refuse band: one user-visible notice per refusal episode", async () => {
 		const session = host.sessions.get("s-fold")!;
-		const refusalNotices = () => session.notices.filter((notice) => notice.content.some((block) => typeof (block as { text?: string }).text === "string" && (block as { text: string }).text.includes("Magic Context refused")));
+		const refusalNotices = () =>
+			session.notices.filter((notice) =>
+				notice.content.some(
+					(block) =>
+						typeof (block as { text?: string }).text === "string" &&
+						(block as { text: string }).text.includes("Magic Context refused"),
+				),
+			);
 		host.llmResponder = () => ({ fail: true }); // model fails ⇒ nothing can fold
 		setPressure(host, "s-fold", 9_600); // 96%: refuse band
 		expect(await host.firePreStep(stepFor("s-fold"))).toBe("reject");
@@ -182,7 +251,7 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		expect(refusalNotices()).toHaveLength(1); // same episode ⇒ no second notice
 
 		await session.appendMessage("m8", bigMessage(8)); // history grows ⇒ m7 becomes foldable again
-	host.llmResponder = () => ({ text: "Folded the last message." });
+		host.llmResponder = () => ({ text: "Folded the last message." });
 		expect(await host.firePreStep(stepFor("s-fold"))).toBe("enter"); // fold succeeds ⇒ enter
 		expect(getCompartments(db, "s-fold")).toHaveLength(2);
 		expect(refusalNotices()).toHaveLength(1); // entering an episode resets, appends nothing
@@ -208,7 +277,9 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 	test("projection: every seeded message carries its durable id and text", async () => {
 		const records = host.sessions.get("s-drop")!.logRecords();
 		const texts = records.map((record) => record.text);
-		expect(texts.some((text) => text.startsWith("message-5-payload"))).toBe(true);
+		expect(texts.some((text) => text.startsWith("message-5-payload"))).toBe(
+			true,
+		);
 		expect(bigMessage(0).length).toBeGreaterThan(1_000);
 	});
 });
