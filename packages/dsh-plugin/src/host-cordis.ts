@@ -22,7 +22,10 @@ import type {
 	ModelSelection,
 } from "@deepseek-ai/dsh-agent";
 import { CommandId } from "@deepseek-ai/dsh-commands/brand";
-import { CompactionId } from "@deepseek-ai/dsh-compaction";
+import {
+	CompactionId,
+	compactCheckpointSource,
+} from "@deepseek-ai/dsh-compaction";
 import type { LlmRuntime } from "@deepseek-ai/dsh-llm";
 import { MessageId } from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
@@ -50,6 +53,7 @@ import type {
 	CompactionSummaryData,
 	DshHost,
 	DshSession,
+	McCheckpointSource,
 	PostToolInfo,
 	PostToolVerdict,
 	PreStepDecision,
@@ -93,7 +97,7 @@ function wrapSession(ctx: Context, session: Session): DshSession {
 			...(header.cwd !== undefined ? { cwd: header.cwd } : {}),
 		},
 		surfaceNodes: () => [...session.surface.nodes],
-		async replaceSurface(replacement, startSeq, endSeq, shadowedSeqs) {
+		async replaceSurface(replacement, startSeq, endSeq, shadowedSeqs, options) {
 			// The host's canonical surface contract requires sourceEventSeqs to
 			// cite every surface node the span covers — the caller knows the
 			// managed messages, the live session knows the nodes (notice and head
@@ -122,13 +126,24 @@ function wrapSession(ctx: Context, session: Session): DshSession {
 				end = span[span.length - 1]!;
 				shadowed = span;
 			}
+			const checkpoint = options?.checkpoint;
 			const event = session.append(
 				"user/message",
 				{
 					id: MessageId(`mc-edit-${randomUUID()}`),
 					role: "user",
 					content: replacement,
-					source: { kind: "magic-context" },
+					// A manual `/compact` fold stamps the host's own checkpoint
+					// source (T072); every other managed edit is a plugin notice.
+					source:
+						checkpoint === undefined
+							? { kind: "magic-context" }
+							: (compactCheckpointSource(
+									CompactionId(checkpoint.compactionId),
+									checkpoint.sourceCommandId !== undefined
+										? CommandId(checkpoint.sourceCommandId)
+										: undefined,
+								) as never),
 				},
 				{
 					surfaceOp: {

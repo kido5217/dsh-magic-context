@@ -9,6 +9,7 @@ export const cacheHarnessOptions: { value: HarnessFilter; label: string }[] = [
   { value: "opencode2", label: "OpenCode 2" },
   { value: "pi", label: "Pi" },
   { value: "omp", label: "OMP" },
+  { value: "dsh", label: "DSH" },
   { value: "broca", label: "Broca" },
   { value: "claude_code", label: "Claude Code" },
   { value: "codex", label: "Codex" },

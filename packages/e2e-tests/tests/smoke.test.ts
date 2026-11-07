@@ -39,6 +39,10 @@ forEachHost(import.meta.url, "opencode e2e smoke", (host) => {
     it("sends a prompt, mock captures it, plugin initializes its DB", async () => {
         const sessionId = await h.createSession();
         await h.sendPrompt(sessionId, "hi there");
+        // DSH boots one headless turn per process and the first pass sees no
+        // history, so message tags materialize on the next history pass (the
+        // flow every DSH live gate exercises). One extra turn, same session.
+        if (host === "dsh") await h.sendPrompt(sessionId, "continue");
 
         // Internal small-model requests do not carry Magic Context. Select the
         // main request by excluding each host's title/summary/compaction prompts.

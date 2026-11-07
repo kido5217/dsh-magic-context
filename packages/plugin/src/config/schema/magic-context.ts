@@ -1215,7 +1215,7 @@ export const MagicContextConfigSchema = z
             .boolean()
             .optional()
             .describe(
-                "Enable automatic npm self-update checks for the OpenCode plugin. Security: USER-only in config loader, so hostile project configs cannot suppress updates.",
+                "Enable automatic npm self-update checks for the OpenCode plugin. Security: USER-only in config loader, so hostile project configs cannot suppress updates. DSH is supported the same way: its maintenance lane checks npm and applies `dsh plugin --profile <name> add <pkg>@<version>` (restart-required), skipping dev (link:) and exact-version installs.",
             ),
         language: z
             .string()

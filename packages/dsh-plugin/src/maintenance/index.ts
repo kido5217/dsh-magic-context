@@ -46,6 +46,7 @@ import {
 	DshHiddenAgentTransport,
 } from "./transport-agent.js";
 import { DshSingleShotTransport } from "./transport-single-shot.js";
+import { startDshUpdateCheck } from "./update-check.js";
 
 const DEFAULT_MAINTENANCE_TOOLS = [
 	"read",
@@ -82,8 +83,8 @@ export interface MaintenanceHandle {
 /** DSH session root: `$DSH_HOME/sessions` (crash residue reaped at boot). */
 function maintenanceSessionRoot(): string {
 	const home =
-		process.env["DSH_HOME"] && process.env["DSH_HOME"].length > 0
-			? process.env["DSH_HOME"]
+		process.env.DSH_HOME && process.env.DSH_HOME.length > 0
+			? process.env.DSH_HOME
 			: join(homedir(), ".dsh");
 	return join(home, "sessions");
 }
@@ -101,8 +102,8 @@ export function maintenanceRunnable(config: {
 }): boolean {
 	const dreamer = config.dreamer;
 	if (!dreamer) return false;
-	if (dreamer["enabled"] === false) return false;
-	return dreamer["dsh"] !== undefined || dreamer["pi"] !== undefined;
+	if (dreamer.enabled === false) return false;
+	return dreamer.dsh !== undefined || dreamer.pi !== undefined;
 }
 
 export function startMaintenance(
@@ -213,11 +214,19 @@ export function startMaintenance(
 	});
 	scheduler.start();
 
+	// T079: the npm update check rides the lane start — exactly one check per
+	// session boot, its own timer, no coupling to dreamer ticks. Honors
+	// auto_update:false; announces through the log (no toast seam on DSH).
+	const updateCheck = startDshUpdateCheck({ config: deps.config });
+
 	return {
 		scheduler,
 		runManual: (task?: DreamTaskName) =>
 			runManualDream({ ...manualDeps, task }),
-		stop: () => scheduler.stop(),
+		stop: () => {
+			updateCheck.stop();
+			scheduler.stop();
+		},
 	};
 }
 

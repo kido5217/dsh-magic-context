@@ -25,6 +25,7 @@ import {
     runV22BackfillCommands,
     type V22BackfillCommandArgs,
 } from "../lib/v22-backfill-commands";
+import { runDoctor as runDshDoctor } from "./doctor-dsh";
 import { diagnoseIdentitySplits } from "./doctor-identity-splits";
 import { runDoctor as runOmpDoctor } from "./doctor-omp";
 import { runDoctor as runOpenCodeDoctor } from "./doctor-opencode";
@@ -166,6 +167,11 @@ export async function dispatchDoctor(
                 issue: options.issue,
                 report: options.report,
             });
+        case "dsh":
+            // The DSH doctor consumes the raw argv for `--profile`; `--fix`
+            // carries the safe repairs (missing bundle rows in the selected
+            // profile).
+            return runDshDoctor({ argv: options.argv ?? [], fix: options.fix });
     }
 }
 

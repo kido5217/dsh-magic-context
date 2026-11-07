@@ -13,6 +13,7 @@ import { ensureDocsProposalGitignore } from "../lib/docs-proposal-gitignore";
 import { resolveAdaptersForCommand } from "../lib/harness-select";
 import { intro, log, note, outro } from "../lib/prompts";
 import { runDoctorStoreInit } from "./doctor-store";
+import { runSetup as runDshSetup } from "./setup-dsh";
 import { runSetup as runOmpSetup } from "./setup-omp";
 import { runSetup as runOpenCodeSetup } from "./setup-opencode";
 import { runSetup as runPiSetup } from "./setup-pi";
@@ -52,7 +53,7 @@ export async function runSetup(argv: string[]): Promise<number> {
 
         // Each harness owns its no-host flow. In particular, an explicit OpenCode
         // setup can continue for a Desktop or not-yet-installed host.
-        const code = await dispatchSetup(adapter, dryRun);
+        const code = await dispatchSetup(adapter, dryRun, argv);
         if (code !== 0) {
             anyFailure = true;
             continue;
@@ -64,7 +65,7 @@ export async function runSetup(argv: string[]): Promise<number> {
             } else if (ignore.status === "failed") {
                 log.warn(`Could not update ${ignore.path}: ${ignore.error}`);
             }
-            printNextSteps(adapter);
+            if (adapter.kind !== "dsh") printNextSteps(adapter);
         }
     }
 
@@ -79,7 +80,11 @@ export async function runSetup(argv: string[]): Promise<number> {
     return 0;
 }
 
-async function dispatchSetup(adapter: HarnessAdapter, dryRun: boolean): Promise<number> {
+async function dispatchSetup(
+    adapter: HarnessAdapter,
+    dryRun: boolean,
+    argv: string[],
+): Promise<number> {
     switch (adapter.kind) {
         case "opencode":
             return runOpenCodeSetup(dryRun);
@@ -87,6 +92,11 @@ async function dispatchSetup(adapter: HarnessAdapter, dryRun: boolean): Promise<
             return runPiSetup({ dryRun });
         case "omp":
             return runOmpSetup({ dryRun });
+        // The DSH flow prints its own profile-specific next steps (the generic
+        // notes below have no profile to name), so it is skipped in
+        // printNextSteps.
+        case "dsh":
+            return runDshSetup({ argv, dryRun });
     }
 }
 

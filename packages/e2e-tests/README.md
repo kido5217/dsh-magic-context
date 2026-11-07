@@ -272,3 +272,64 @@ expect(mock.requests().length).toBe(1);
 await opencode.kill();
 await mock.stop();
 ```
+
+## DSH lane (T080/T081 NOTES)
+
+The `dsh` host kind runs the real `dsh` binary headless (`dsh --profile <p>
+--json <prompt>`) against the same MockProvider, with a fully isolated DSH
+home, XDG pins, and a seeded profile whose `@cortexkit/dsh-magic-context`
+bundle is a link to `packages/dsh-plugin/dist` (built fresh unless
+`MC_E2E_DSH_SKIP_BUILD=1`). `src/dsh-runner/spawn.ts` owns the process and
+session-log contract; `src/dsh-harness.ts` implements `HostHarness`.
+
+```bash
+# Lane run (manifest-selected files for the dsh harness):
+bun run test:dsh
+# Single file, e.g. while porting a scenario:
+MC_E2E_MODE=ts MC_E2E_HOST=dsh MC_DSH_E2E=1 NODE_ENV='' bun test --timeout 600000 tests/smoke.test.ts
+```
+
+The lane is live-gated twice: the manifest must select it (`--harness dsh` →
+`MC_E2E_HOST=dsh`) and `MC_DSH_E2E=1` must be set, so a stray selection
+collects as skipped instead of failing a normal suite. Useful knobs:
+`MC_DSH_BIN` (binary override), `MC_DSH_TURN_TIMEOUT_MS` (per-boot bound,
+default 180s), `MC_E2E_DSH_SKIP_BUILD=1`, `MC_E2E_KEEP=1`.
+
+Session identity: a headless boot mints its own `session-<uuid>`; the harness
+returns a pending id from `createSession()` and materializes it from the
+first turn's `final` event, so `restart()` is a no-op — every later turn is
+already a fresh process adopting the same durable session via
+`--session-id`.
+
+Proven: `tests/smoke.test.ts` passes on the lane against the mock provider
+(mock captures the main request, context.db initializes, tags persist, the
+historian assertion holds). Smoke sends one extra turn when `host === "dsh"`:
+the first pass runs against empty history, so message tags materialize on the
+next history pass — the same two-turn flow the dsh-plugin live gates prove.
+
+Remaining gaps:
+
+1. **CI job not added.** `.github/workflows/ci.yml` is outside this task's
+   scope; mirror the Pi lane's job using
+   `bun run --cwd packages/e2e-tests dsh-files` for the file list and
+   `test:dsh` for the run (needs the `dsh` binary and Bun ≥ 1.4).
+2. **Bun floor.** Root `engines.bun` is `>=1.4.0`; on older Bun the
+   `test:dsh` version guard and the dsh-plugin rebuild fail — set
+   `MC_E2E_DSH_SKIP_BUILD=1` against a prebuilt `dist`.
+3. **32 behavior entries are recorded as dsh divergences** in
+   `mode-manifest.json`; roughly a third are honest "harness gap" rows that
+   should flip to `"dsh"` host rows once a lane run proves each scenario
+   (scenarios needing `childSessions`, `nativeCompact`, `sessionRemove`, or
+   `steerDelivery` keep permanent divergences instead).
+4. **No `dsh` block in the core historian model schema**
+   (`packages/plugin/src/config/schema/magic-context.ts`), so the lane pins
+   the historian only via the session route (the mock). When the schema
+   grows the block, also extend the per-host model scan in
+   `src/mock-routing.ts` with `"dsh"`.
+5. **Pi-style helpers** (`createFreshSession`, session-file assertions) are
+   Pi-shaped; dsh scenarios port through the generic `createSession` +
+   `sendPrompt` path and `sessionLogEvents()` for durable-log assertions.
+6. **No biome config in this package.** Repo-wide `bunx biome check` with
+   defaults reformats every file (tabs); the new files follow the package's
+   hand-maintained 4-space style. Add a scoped `biome.json` before pointing
+   formatters at this lane.

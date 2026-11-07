@@ -3,7 +3,7 @@ import type { CapturedRequest, MockProvider } from './mock-provider/server';
 import type { PiRunResult } from "./pi-runner/spawn";
 import type { PiMessage, PiSessionStats, PiState } from "./pi-runner/rpc-client";
 
-export type HostKind = "opencode" | "opencode2" | "pi" | "omp";
+export type HostKind = "opencode" | "opencode2" | "pi" | "omp" | "dsh";
 
 /** Host features that are not uniformly available to portable scenarios. */
 export interface HostCapabilities {

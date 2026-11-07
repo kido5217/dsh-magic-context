@@ -111,7 +111,15 @@ export interface SessionSummary {
   is_subagent: boolean;
 }
 
-export type Harness = "opencode" | "opencode2" | "pi" | "omp" | "broca" | "claude_code" | "codex";
+export type Harness =
+  | "opencode"
+  | "opencode2"
+  | "pi"
+  | "omp"
+  | "dsh"
+  | "broca"
+  | "claude_code"
+  | "codex";
 
 export interface SessionFilter {
   harness?: Harness;

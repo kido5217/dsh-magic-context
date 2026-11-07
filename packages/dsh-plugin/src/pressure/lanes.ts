@@ -29,11 +29,18 @@
 
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import {
+	getCompartments,
+	replaceAllCompartmentState,
+} from "@magic-context/core/features/magic-context/compartment-storage";
+import {
 	createScheduler,
 	type Scheduler,
 } from "@magic-context/core/features/magic-context/scheduler";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
+import {
+	getOrCreateSessionMeta,
+	updateSessionMeta,
+} from "@magic-context/core/features/magic-context/storage-meta-session";
 import type { Tagger } from "@magic-context/core/features/magic-context/tagger";
 import { createTagger } from "@magic-context/core/features/magic-context/tagger";
 import { maybeAutoEmbedSessionBackfill } from "@magic-context/core/hooks/magic-context/auto-embed-session";
@@ -186,6 +193,19 @@ export class PressureLanes {
 	 * shipped in this bundle, so calling it there would fail on every pass
 	 * instead of doing useful work. That packaging gap is declared in PARITY 19.
 	 */
+	/**
+	 * [T069] `/ctx-embed start`: kick the shared embedding backfill for this
+	 * session (same gate as the per-pass backfill — remote runtime only).
+	 */
+	requestEmbedBackfill(sessionId: string): string {
+		const provider = this.deps.config.embedding?.provider;
+		if (provider === "local" || provider === "off" || provider === undefined) {
+			return 'Embeddings are off for this project. This host ships the remote embedding runtime only — set embedding.provider to "remote" and restart.';
+		}
+		this.maybeBackfillEmbeddings(sessionId);
+		return "Backfill requested for this session; semantic ctx_search fills in as chunks embed.";
+	}
+
 	private maybeBackfillEmbeddings(mcSession: string): void {
 		const provider = this.deps.config.embedding.provider;
 		if (provider === "local" || provider === "off") return;
@@ -254,6 +274,11 @@ export class PressureLanes {
 		state: AttachedSession,
 		info: PreStepInfo,
 	): Promise<PreStepDecision> {
+		// A manual fold owns this session right now (T070/T072: one shared
+		// busy set on the compaction claim, consulted by every fold entry
+		// point). The managed pass stays out of the way; the next step runs
+		// it as usual.
+		if (this.deps.claim.foldInFlight(session.id)) return "enter";
 		const lane = this.deps.meter.lane(session.id); // fresh EVERY pass
 		const measured = this.deps.host.pressure(session.id);
 		// A route that already rejected one request is priced against what it
@@ -272,6 +297,7 @@ export class PressureLanes {
 							: {}),
 					};
 		const projection = projectDshSessionLog(this.readRecords(session.id));
+		this.persistStatusMeta(session.id, reading);
 		this.tagProjectedMessages(state.mcSession, projection);
 		indexDshSessionHistory(this.deps.db, state.mcSession, projection);
 		this.maybeBackfillEmbeddings(state.mcSession);
@@ -426,6 +452,96 @@ export class PressureLanes {
 		});
 		this.refusalEpisode.delete(session.id);
 		return "enter";
+	}
+
+	/**
+	 * [T068] Persist the metered reading every managed pass, so `/ctx-status`
+	 * (and any store reader) sees the same numbers the lanes act on: tokens in,
+	 * percentage of the effective window, and the idle clock for cache TTL.
+	 * Pre-step runs directly after the previous response was served, which is
+	 * exactly the semantics `last_response_time` carries on every host.
+	 */
+	private persistStatusMeta(
+		sessionId: string,
+		reading: { pressureTokens?: number; contextWindow?: number } | undefined,
+	): void {
+		if (reading === undefined) return;
+		const limit = reading.contextWindow ?? 0;
+		const tokens = reading.pressureTokens ?? 0;
+		const bands = this.deps.meter.read(sessionId);
+		const percentage =
+			bands.percentage ?? (limit > 0 ? (tokens / limit) * 100 : 0);
+		updateSessionMeta(this.deps.db, sessionId, {
+			lastInputTokens: tokens,
+			lastContextPercentage: percentage,
+			lastResponseTime: Date.now(),
+		});
+	}
+
+	/**
+	 * [T070] Manual fold entry: `/ctx-wrapup` folds the live raw tail keeping
+	 * the newest N raw messages; `/ctx-recomp` (`fullRebuild`) first wipes the
+	 * published compartments so the fold rebuilds coverage from message one.
+	 * The pre-step pass steps around a running manual fold (see `runPass`),
+	 * and the busy slot is the compaction claim's (T072) — a `/compact` in
+	 * flight and a command fold serialize on the same guard.
+	 */
+	async manualFold(
+		dshSessionId: string,
+		opts: {
+			readonly fullRebuild?: boolean;
+			readonly keepMessages?: number;
+		} = {},
+	): Promise<string> {
+		const state = this.attachedSessions.get(dshSessionId);
+		const session = this.deps.host.getSession(dshSessionId);
+		if (state === undefined || session === undefined) {
+			return "Magic Context does not manage this session yet (no managed pass has run in it).";
+		}
+		if (!this.deps.claim.beginFold(dshSessionId)) {
+			return "A manual fold is already running for this session.";
+		}
+		try {
+			const projection = projectDshSessionLog(this.readRecords(dshSessionId));
+			if (opts.fullRebuild === true) {
+				if (getCompartments(this.deps.db, state.mcSession).length === 0) {
+					return "Nothing to rebuild: this session has no published compartments.";
+				}
+				replaceAllCompartmentState(this.deps.db, state.mcSession, [], []);
+			}
+			const window = this.deps.host.pressure(dshSessionId)?.contextWindow;
+			const protectedTailTokens =
+				opts.keepMessages !== undefined
+					? projection.records
+							.filter((record) => !isAdapterSurfaceId(record.messageId))
+							.slice(-opts.keepMessages)
+							.reduce(
+								(total, record) =>
+									total + Math.ceil((record.text?.length ?? 0) / 4),
+								0,
+							)
+					: protectedTailBudget(this.deps.config, window, true);
+			const fold = await this.deps.historian.fold({
+				session,
+				mcSession: state.mcSession,
+				projection,
+				rules: state.rules,
+				subagent: state.rules.role === "subagent",
+				protectedTailTokens,
+			});
+			await this.deps.head.refresh(session, {
+				mcSession: state.mcSession,
+				subagent: state.rules.role === "subagent",
+				projection,
+				managedChangeLanded: true,
+			});
+			if (fold === null) {
+				return "Nothing to fold: the eligible window is empty or no historian route is configured.";
+			}
+			return `Folded messages ${fold.fromOrdinal}-${fold.toOrdinal} into a compartment. The new history lands on the next step.`;
+		} finally {
+			this.deps.claim.endFold(dshSessionId);
+		}
 	}
 
 	/** Core scheduler execute/defer for NEW auto-queues (cache-TTL discipline). */

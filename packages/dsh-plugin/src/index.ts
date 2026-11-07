@@ -28,11 +28,13 @@ import { log } from "@magic-context/core/shared/logger";
 import { createPromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
 import { registerStandalonePluginMarker } from "@magic-context/core/standalone-plugin-marker";
 import packageMetadata from "../package.json";
+import { registerCommands } from "./commands/index.js";
 import {
 	CompactionClaimRegistry,
 	McCompactionClaim,
 	type McFoldCallback,
 } from "./compaction-claim.js";
+import { createMcFold } from "./compaction-fold.js";
 import { loadDshConfig } from "./config/index.js";
 import type { DshHost } from "./host.js";
 import {
@@ -84,6 +86,7 @@ export const inject = [
 	"sessionQuery",
 	"tokenMeter",
 	"attachments",
+	"commands",
 ];
 
 export interface MountOptions {
@@ -248,8 +251,15 @@ export function mountAdapter(
 	registerEffect("managed-edits", () => () => managedEdits.close());
 
 	// T011 — compaction claim (MC owns folding on managed sessions).
+	// T072 — the claim's manual entry is the real historian fold (compaction
+	// lifecycle + checkpoint + full CompactionResult), built below once the
+	// historian exists; the wrapper resolves the late binding at call time.
 	const compaction = new CompactionClaimRegistry();
-	const fold: McFoldCallback = opts.fold ?? (async () => null);
+	let mcFold: McFoldCallback | undefined = opts.fold;
+	const fold: McFoldCallback = (agent, region, signal, meta) =>
+		mcFold === undefined
+			? Promise.resolve(null)
+			: mcFold(agent, region, signal, meta);
 	registerEffect("compaction-claim", () => {
 		new McCompactionClaim(host.ctx, compaction, fold);
 		return () => {
@@ -283,6 +293,18 @@ export function mountAdapter(
 		opts.historianRoute,
 		opts.projectDir ?? process.cwd(),
 	);
+	// T072 — `/compact` folds for real: same fold core, host lifecycle
+	// events, and the shared busy slot on the claim (a pre-step pass and a
+	// manual fold never overlap on one session).
+	mcFold ??= createMcFold({
+		host,
+		db,
+		config,
+		claim: compaction,
+		mapping,
+		historian,
+		readSessionLog: opts.readSessionLog ?? (() => undefined),
+	});
 	const dropApplier = new DropApplier(db, managedEdits);
 	const lanes = new PressureLanes({
 		host,
@@ -418,6 +440,23 @@ export async function apply(
 		attachments: ctx.attachments,
 	});
 	ctx.effect(() => handle.dispose, "dsh-magic-context");
+	// [T067 commands] the six ctx-* slash commands, dispatched by interactive
+	// surfaces against the agent that received them.
+	const disposeCommands = registerCommands({
+		db,
+		config: loaded.config,
+		lanes: handle.lanes,
+		version: packageMetadata.version,
+		projectDir: cwd,
+		maintenance: () => activeMaintenance,
+		register: (definition) => ctx.commands.register(definition),
+	});
+	ctx.effect(() => disposeCommands, "dsh-magic-context-commands");
+	// V6 registration proof: interactive surfaces list these; headless proves
+	// the mount reached the command registry (dispatch is surface-side).
+	process.stderr.write(
+		"[dsh-magic-context] commands registered: ctx-status, ctx-flush, ctx-embed, ctx-recomp, ctx-wrapup, ctx-dream\n",
+	);
 	// [T057 maintenance] the background dreamer: one adapter clock, two hidden
 	// carriers, core task logic. Gated on an explicit dreamer model block —
 	// a machine with no configured dreamer model must not churn failing runs.

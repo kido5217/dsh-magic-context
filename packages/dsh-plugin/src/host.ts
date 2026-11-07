@@ -11,10 +11,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
-import type {
-	McManagedChangeKind,
-	McReplacementContent,
-} from "./surface/events.js";
+import type { McReplacementContent } from "./surface/events.js";
 
 /** Auxiliary LLM purposes this adapter declares (docs/subsystems/llm-streaming.md). */
 declare module "@deepseek-ai/dsh-llm/types" {
@@ -77,6 +74,17 @@ export interface CompactionEndData {
 	readonly cwd?: string;
 }
 
+/**
+ * Optional identity for a surface replacement (T072). Present ⇒ the appended
+ * `user/message` carries the host's compaction checkpoint source
+ * (`compact-checkpoint`), correlated with the transaction, instead of the
+ * plain `magic-context` source.
+ */
+export interface McCheckpointSource {
+	readonly compactionId: string;
+	readonly sourceCommandId?: string;
+}
+
 /** A live or cold session the adapter can read and manage. */
 export interface DshSession {
 	readonly id: string;
@@ -87,12 +95,15 @@ export interface DshSession {
 	 * Replace the surface nodes startSeq…endSeq (inclusive, position order) with a
 	 * plugin-appended `user/message` node. `shadowedSeqs` must list every shadowed
 	 * node — the compaction-precedent contract (`surfaceOp: replace`).
+	 * `options.checkpoint` (T072) stamps the replacement with the host's
+	 * compaction checkpoint source instead of the plugin notice source.
 	 */
 	replaceSurface(
 		replacement: McReplacementContent,
 		startSeq: number,
 		endSeq: number,
 		shadowedSeqs: readonly number[],
+		options?: { readonly checkpoint?: McCheckpointSource },
 	): Promise<{ replacementSeq: number }>;
 	/**
 	 * Rewrite ONE current `tool/result` node's content in place (T015).

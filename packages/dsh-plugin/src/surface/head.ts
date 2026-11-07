@@ -44,7 +44,7 @@ import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-conte
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { updateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
 import type { M0SnapshotMarkers } from "@magic-context/core/hooks/magic-context/inject-compartments";
-import type { DshSession } from "../host.js";
+import type { DshSession, McCheckpointSource } from "../host.js";
 import type { HistorianRoute } from "../sessions/historian.js";
 import type { DshLogProjection } from "./dsh-session-log.js";
 import { isAdapterSurfaceId } from "./dsh-session-log.js";
@@ -224,12 +224,13 @@ export class HeadManager {
 		session: DshSession,
 		context: HeadRenderContext,
 		coveredSeqs: readonly number[],
+		checkpoint?: McCheckpointSource,
 	): Promise<ShadowInfo> {
 		const surface = session.surfaceNodes();
 		const ordered = surface.filter((seq) => coveredSeqs.includes(seq));
 		if (ordered.length === 0) return {};
 		const rendered = await this.renderBaseline(context);
-		return this.applyPair(session, context, rendered, ordered);
+		return this.applyPair(session, context, rendered, ordered, checkpoint);
 	}
 
 	// ── internals ────────────────────────────────────────────────────────────
@@ -345,6 +346,7 @@ export class HeadManager {
 			identityDigest: string;
 		},
 		ordered: readonly number[],
+		checkpoint?: McCheckpointSource,
 	): Promise<ShadowInfo> {
 		const content = await this.baselineContent(rendered);
 		let baselineSeq: number;
@@ -355,6 +357,7 @@ export class HeadManager {
 				ordered[0]!,
 				ordered[ordered.length - 1]!,
 				ordered,
+				checkpoint !== undefined ? { checkpoint } : undefined,
 			);
 			baselineSeq = result.replacementSeq;
 			shadowedSeqs = ordered;

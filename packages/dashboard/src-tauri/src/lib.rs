@@ -2,6 +2,7 @@ pub mod broca_wal;
 pub mod commands;
 pub mod config;
 pub mod db;
+pub mod dsh_sessions;
 pub mod embedding_probe;
 pub mod external_cache_sessions;
 pub mod jsonc;

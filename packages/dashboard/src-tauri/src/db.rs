@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::broca_wal;
+use crate::dsh_sessions;
 use crate::external_cache_sessions;
 use crate::pi_sessions;
 use crate::project_identity::{basename, normalize_stored_project_path};
@@ -895,6 +896,7 @@ pub enum Harness {
     Opencode2,
     Pi,
     Omp,
+    Dsh,
     Broca,
     ClaudeCode,
     Codex,
@@ -907,6 +909,7 @@ impl Harness {
             Self::Opencode2 => "opencode2",
             Self::Pi => "pi",
             Self::Omp => "omp",
+            Self::Dsh => "dsh",
             Self::Broca => "broca",
             Self::ClaudeCode => "claude_code",
             Self::Codex => "codex",
@@ -916,7 +919,7 @@ impl Harness {
     fn has_magic_context_plugin_state(self) -> bool {
         matches!(
             self,
-            Self::Opencode | Self::Opencode2 | Self::Pi | Self::Omp
+            Self::Opencode | Self::Opencode2 | Self::Pi | Self::Omp | Self::Dsh
         )
     }
 
@@ -962,6 +965,7 @@ impl std::str::FromStr for Harness {
             "opencode2" => Ok(Self::Opencode2),
             "pi" => Ok(Self::Pi),
             "omp" => Ok(Self::Omp),
+            "dsh" => Ok(Self::Dsh),
             "broca" => Ok(Self::Broca),
             "claude_code" | "claude-code" | "claudecode" | "cc" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
@@ -3312,6 +3316,7 @@ pub fn get_cache_events_from_db(limit: usize, since_timestamp: Option<i64>) -> V
         since_timestamp.unwrap_or_else(|| now_millis().saturating_sub(MERGED_TIMELINE_LOOKBACK_MS));
     let mut rows = load_raw_db_cache_events(limit, Some(floor)).unwrap_or_default();
     rows.extend(load_raw_pi_cache_events(limit, Some(floor)));
+    rows.extend(load_raw_dsh_cache_events(limit, Some(floor)));
     let (claude_rows, codex_rows) = load_raw_external_cache_events_parallel(limit, Some(floor));
     rows.extend(claude_rows);
     rows.extend(codex_rows);
@@ -4340,6 +4345,15 @@ pub fn load_cache_session_titles(
             }
         }
     }
+
+    // DSH titles come from the host log (`session/title` event, first user
+    // message fallback); the store row only names the session.
+    for meta in dsh_sessions::scan_dsh_session_dir() {
+        let key = (Harness::Dsh, meta.session_id.clone());
+        if keys.contains(&key) {
+            titles.insert(key, clean_pi_title(meta.title, &meta.first_message));
+        }
+    }
     for meta in external_cache_sessions::scan_claude_code_session_dir() {
         let key = (Harness::ClaudeCode, meta.session_id.clone());
         if keys.contains(&key) {
@@ -4365,6 +4379,7 @@ pub fn load_cache_subagent_flags(
         Harness::Opencode2,
         Harness::Pi,
         Harness::Omp,
+        Harness::Dsh,
     ] {
         if keys.iter().any(|(h, _)| *h == harness) {
             for (session_id, is_subagent) in load_subagent_map_for_harness(harness) {
@@ -4373,6 +4388,13 @@ pub fn load_cache_subagent_flags(
                     out.insert(key, is_subagent);
                 }
             }
+        }
+    }
+    // A DSH maintenance run is a subagent by definition, even when its store
+    // row predates or lacks the flag (the id prefix is the contract).
+    for (harness, session_id) in keys {
+        if *harness == Harness::Dsh && dsh_sessions::is_maintenance_session_id(session_id) {
+            out.insert((Harness::Dsh, session_id.clone()), true);
         }
     }
     out
@@ -4403,6 +4425,20 @@ pub fn get_session_cache_stats_from_db(
                 );
             }
         }
+        if harness_filter.map_or(true, |filter| filter == Harness::Dsh) {
+            pre_cap_subagent_flags.extend(
+                load_subagent_map_for_harness(Harness::Dsh)
+                    .into_iter()
+                    .map(|(session_id, is_subagent)| ((Harness::Dsh, session_id), is_subagent)),
+            );
+            // Maintenance runs are subagents by contract, flag or no flag.
+            for meta in dsh_sessions::scan_dsh_session_dir() {
+                if dsh_sessions::is_maintenance_session_id(&meta.session_id) {
+                    pre_cap_subagent_flags
+                        .insert((Harness::Dsh, meta.session_id.clone()), true);
+                }
+            }
+        }
         // OpenCode's own parent ids only matter when OpenCode sessions are
         // listed; reading them for another harness filter cost every poll.
         if harness_filter.map_or(true, |filter| {
@@ -4424,6 +4460,7 @@ pub fn get_session_cache_stats_from_db(
         (mut sessions, opencode_activity_note),
         pi_sessions,
         omp_sessions,
+        dsh_cache_entries,
         claude_sessions,
         codex_sessions,
     ) = std::thread::scope(|scope| {
@@ -4454,6 +4491,13 @@ pub fn get_session_cache_stats_from_db(
                 Vec::new()
             }
         });
+        let dsh = scope.spawn(|| {
+            if includes_harness(Harness::Dsh) {
+                load_dsh_cache_sessions()
+            } else {
+                Vec::new()
+            }
+        });
         let claude = scope.spawn(|| {
             if includes_harness(Harness::ClaudeCode) {
                 external_cache_sessions::scan_claude_code_session_dir()
@@ -4472,6 +4516,7 @@ pub fn get_session_cache_stats_from_db(
             opencode.join().unwrap_or_default(),
             pi.join().unwrap_or_default(),
             omp.join().unwrap_or_default(),
+            dsh.join().unwrap_or_default(),
             claude.join().unwrap_or_default(),
             codex.join().unwrap_or_default(),
         )
@@ -4491,6 +4536,9 @@ pub fn get_session_cache_stats_from_db(
         last_activity_ms: meta.modified,
         title: Some(clean_pi_title(meta.session_name, &meta.first_message)),
     }));
+    // DSH rows arrive ready: `load_dsh_cache_sessions` already pairs the
+    // store's activity/subagent data with the host log's title.
+    sessions.extend(dsh_cache_entries);
     sessions.extend(
         claude_sessions
             .into_iter()
@@ -4606,6 +4654,7 @@ pub fn get_session_cache_events(
         Harness::Pi | Harness::Omp => {
             get_pi_session_cache_events(harness, session_id, limit, since_timestamp)
         }
+        Harness::Dsh => get_dsh_session_cache_events(session_id, limit, since_timestamp),
         Harness::ClaudeCode => {
             get_claude_code_session_cache_events(session_id, limit, since_timestamp)
         }
@@ -4654,6 +4703,7 @@ pub fn get_session_cache_events_by_turn_count(
         Harness::Pi | Harness::Omp => {
             get_pi_session_cache_events(harness, session_id, Some(max_events), None)
         }
+        Harness::Dsh => get_dsh_session_cache_events(session_id, Some(max_events), None),
         Harness::ClaudeCode => {
             get_claude_code_session_cache_events(session_id, Some(max_events), None)
         }
@@ -5203,6 +5253,17 @@ fn mapped_session_directories(identities: &SessionIdentityMap) -> Vec<(String, S
         }
     }
 
+    // DSH sessions without a readable log have no directory to map from.
+    for session in load_dsh_store_sessions() {
+        if session.cwd.is_empty() {
+            continue;
+        }
+        let identity = lookup_session_identity(identities, Harness::Dsh, &session.session_id);
+        if !identity.is_empty() {
+            dirs.push((identity, session.cwd));
+        }
+    }
+
     dirs
 }
 
@@ -5343,6 +5404,28 @@ fn enumerate_projects_filtered(project_paths_filter: Option<&HashSet<String>>) -
                 .or_insert((meta.cwd, 0));
             entry.1 = entry.1.saturating_add(1);
         }
+    }
+    // DSH counts follow the listing (store rows), keeping Projects and
+    // History consistent; a session with no log contributes no directory and
+    // is counted only under sessions that have one.
+    for session in load_dsh_store_sessions() {
+        if session.cwd.is_empty() {
+            continue;
+        }
+        if let Some(allowed_paths) = project_paths_filter {
+            if !allowed_paths.contains(&session.cwd) {
+                continue;
+            }
+        }
+        let identity =
+            lookup_session_identity(&session_identities, Harness::Dsh, &session.session_id);
+        if identity.is_empty() {
+            continue;
+        }
+        let entry = pi_counts
+            .entry((Harness::Dsh, identity))
+            .or_insert((session.cwd, 0));
+        entry.1 = entry.1.saturating_add(1);
     }
     if let Some(allowed_paths) = project_paths_filter {
         for project_path in allowed_paths {
@@ -7542,11 +7625,299 @@ pub fn list_omp_sessions(filter: &SessionFilter) -> Vec<SessionRow> {
     list_pi_compatible_sessions(filter, Harness::Omp, pi_sessions::scan_omp_session_dir())
 }
 
+/// One DSH session as the shared store knows it, joined with host-log data
+/// where the log is present. Sessions without a log still list (the store is
+/// the listing source); their detail view then degrades to "unavailable".
+struct DshStoreSession {
+    session_id: String,
+    last_activity_ms: i64,
+    is_subagent: bool,
+    title: Option<String>,
+    cwd: String,
+}
+
+/// Store rows (`session_meta` stamped `harness = 'dsh'`) paired with the
+/// DSH home scan. The store names the sessions and carries the activity and
+/// subagent data; the host log supplies title and working directory. A
+/// missing context.db or a missing `$DSH_HOME` each degrade to no rows.
+fn load_dsh_store_sessions() -> Vec<DshStoreSession> {
+    let Some(db_path) = resolve_db_path() else {
+        return Vec::new();
+    };
+    let Ok(conn) = open_readonly(&db_path) else {
+        return Vec::new();
+    };
+    if !table_exists(&conn, "session_meta") {
+        return Vec::new();
+    }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT session_id, last_response_time, is_subagent \
+         FROM session_meta WHERE harness = 'dsh'",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<i64>>(2).unwrap_or(None),
+        ))
+    }) else {
+        return Vec::new();
+    };
+    let logs: HashMap<String, dsh_sessions::DshSessionMeta> = dsh_sessions::scan_dsh_session_dir()
+        .into_iter()
+        .map(|meta| (meta.session_id.clone(), meta))
+        .collect();
+    rows.flatten()
+        .map(|(session_id, last_response_time, flag)| {
+            let log = logs.get(&session_id);
+            // Both stamps are epoch milliseconds; whichever moved most
+            // recently is the honest activity for the row.
+            let last_activity_ms =
+                last_response_time.unwrap_or(0).max(
+                    log.map(|meta| meta.modified).unwrap_or(0),
+                );
+            let is_subagent = flag.unwrap_or(0) != 0
+                || dsh_sessions::is_maintenance_session_id(&session_id);
+            DshStoreSession {
+                title: log.map(|meta| clean_pi_title(meta.title.clone(), &meta.first_message)),
+                cwd: log.map(|meta| meta.cwd.clone()).unwrap_or_default(),
+                session_id,
+                last_activity_ms,
+                is_subagent,
+            }
+        })
+        .collect()
+}
+
+pub fn list_dsh_sessions(filter: &SessionFilter) -> Vec<SessionRow> {
+    if filter.harness.is_some_and(|wanted| wanted != Harness::Dsh) {
+        return Vec::new();
+    }
+    let session_identities = load_session_identity_map();
+    let mut rows: Vec<SessionRow> = load_dsh_store_sessions()
+        .into_iter()
+        .map(|row| {
+            let project_identity =
+                lookup_session_identity(&session_identities, Harness::Dsh, &row.session_id);
+            let project_display = if !row.cwd.is_empty() {
+                basename(&row.cwd)
+            } else if !project_identity.is_empty() {
+                basename(&project_identity)
+            } else {
+                String::new()
+            };
+            SessionRow {
+                harness: Harness::Dsh,
+                session_id: row.session_id,
+                title: row.title.unwrap_or_default(),
+                project_identity,
+                project_display,
+                last_activity_ms: row.last_activity_ms,
+                is_subagent: row.is_subagent,
+            }
+        })
+        .filter(|row| session_matches_filter(row, filter))
+        .collect();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.last_activity_ms));
+    rows
+}
+
+/// DSH rows for the Cache list, from the same source as the history lister.
+/// Entries arrive with titles so the shared title back-fill has nothing left
+/// to read for them.
+fn load_dsh_cache_sessions() -> Vec<CacheSessionListEntry> {
+    load_dsh_store_sessions()
+        .into_iter()
+        .map(|row| CacheSessionListEntry {
+            harness: Harness::Dsh,
+            session_id: row.session_id,
+            last_activity_ms: row.last_activity_ms,
+            title: row.title,
+        })
+        .collect()
+}
+
+/// Assistant usage events as raw cache rows. Shared by the per-session card
+/// (through `build_db_cache_events`) and the merged diagnostics timeline.
+/// DSH records usage the same way Pi does (input excludes cached tokens),
+/// so the rows need no adjustment.
+fn dsh_cache_event_rows(
+    detail: &dsh_sessions::DshSessionDetail,
+    session_id: &str,
+    since_timestamp: Option<i64>,
+) -> Vec<RawDbCacheEvent> {
+    detail
+        .messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+        .filter_map(|message| {
+            let usage = message.usage.as_ref()?;
+            if usage.total == 0
+                || since_timestamp.is_some_and(|since| message.timestamp_ms <= since)
+            {
+                return None;
+            }
+            Some(RawDbCacheEvent {
+                harness: Harness::Dsh,
+                message_id: message.entry_id.clone(),
+                session_id: session_id.to_string(),
+                timestamp: message.timestamp_ms,
+                input_tokens: usage.input,
+                cache_read: usage.cache_read,
+                cache_write: usage.cache_write,
+                total_tokens: usage.total,
+                agent: None,
+                finish: None,
+                native_turn_id: None,
+                context_limit: None,
+                provider: message.provider.clone(),
+                model: message.model.clone(),
+                broca: None,
+                cache_reported: true,
+            })
+        })
+        .collect()
+}
+
+fn get_dsh_session_cache_events(
+    session_id: &str,
+    limit: Option<usize>,
+    since_timestamp: Option<i64>,
+) -> Vec<DbCacheEvent> {
+    let Some(path) = dsh_sessions::find_dsh_session_log(session_id) else {
+        return Vec::new();
+    };
+    let Some(detail) = dsh_sessions::read_dsh_session_detail(&path) else {
+        return Vec::new();
+    };
+    let mut rows = dsh_cache_event_rows(&detail, session_id, since_timestamp);
+    if since_timestamp.is_none() {
+        if let Some(limit) = limit {
+            if limit > 0 && rows.len() > limit {
+                let start = rows.len() - limit;
+                rows.drain(..start);
+            }
+        }
+    }
+    build_db_cache_events(rows, false)
+}
+
+/// Raw DSH events for the merged timeline. Mirrors the Pi loader: bounded
+/// per-session windows, and the mtime-gated scan spares unchanged logs.
+pub fn load_raw_dsh_cache_events(
+    limit: usize,
+    since_timestamp: Option<i64>,
+) -> Vec<RawDbCacheEvent> {
+    let mut all_rows = Vec::new();
+    for meta in dsh_sessions::scan_dsh_session_dir() {
+        if since_timestamp.is_some_and(|since| meta.modified <= since) {
+            continue;
+        }
+        let Some(detail) = dsh_sessions::read_dsh_session_detail(&meta.log_path) else {
+            continue;
+        };
+        let mut session_rows =
+            dsh_cache_event_rows(&detail, &meta.session_id, since_timestamp);
+        session_rows.sort_by_key(|row| std::cmp::Reverse(row.timestamp));
+        session_rows.truncate(limit);
+        all_rows.extend(session_rows);
+    }
+    all_rows
+}
+
+pub fn get_dsh_session_detail(
+    conn: Option<&Connection>,
+    session_id: &str,
+) -> Option<SessionDetail> {
+    let path = dsh_sessions::find_dsh_session_log(session_id)?;
+    let detail = dsh_sessions::read_dsh_session_detail(&path)?;
+    let title = clean_pi_title(detail.meta.title.clone(), &detail.meta.first_message);
+
+    let messages_count = detail.messages.len() as i64;
+    let cache_events_count = dsh_cache_event_rows(&detail, session_id, None).len() as i64;
+
+    let mut compartments = conn
+        .and_then(|c| get_compartments(c, session_id).ok())
+        .unwrap_or_default();
+    // Boundary ids are host message ids; the parsed transcript maps them to
+    // event times without a second pass over the log.
+    let entry_times: HashMap<&str, i64> = detail
+        .messages
+        .iter()
+        .map(|message| (message.entry_id.as_str(), message.timestamp_ms))
+        .collect();
+    for compartment in &mut compartments {
+        compartment.start_time = compartment
+            .start_message_id
+            .as_ref()
+            .and_then(|id| entry_times.get(id.as_str()).copied());
+        compartment.end_time = compartment
+            .end_message_id
+            .as_ref()
+            .and_then(|id| entry_times.get(id.as_str()).copied());
+    }
+    let facts = conn
+        .and_then(|c| get_session_facts(c, session_id).ok())
+        .unwrap_or_default();
+    let notes = conn
+        .and_then(|c| get_session_notes(c, session_id).ok())
+        .unwrap_or_default();
+    let meta = conn
+        .and_then(|c| get_session_meta(c, session_id).ok())
+        .flatten();
+    let historian_runs = conn
+        .map(|c| count_historian_runs(c, session_id))
+        .unwrap_or(0);
+    let token_breakdown = conn
+        .and_then(|c| get_context_token_breakdown(c, session_id).ok())
+        .flatten();
+    let session_identities = load_session_identity_map();
+    let project_identity =
+        lookup_session_identity(&session_identities, Harness::Dsh, session_id);
+    Some(SessionDetail {
+        harness: Harness::Dsh,
+        session_id: detail.meta.session_id.clone(),
+        title,
+        project_identity,
+        project_display: basename(&detail.meta.cwd),
+        project_path: (!detail.meta.cwd.is_empty()).then_some(detail.meta.cwd.clone()),
+        opencode_session_json: None,
+        pi_jsonl_path: Some(detail.meta.log_path.to_string_lossy().to_string()),
+        messages_count,
+        cache_events_count,
+        historian_runs,
+        compartments,
+        facts,
+        notes,
+        meta,
+        token_breakdown,
+        pi_compaction_entries: detail
+            .compaction_entries
+            .iter()
+            .map(|entry| pi_sessions::PiCompactionEntry {
+                entry_id: entry.entry_id.clone(),
+                parent_id: None,
+                timestamp_ms: entry.timestamp_ms,
+                summary: entry.summary.clone(),
+                // DSH compaction events carry no kept-entry anchor or
+                // pre-compaction token count; the card shows those blank.
+                first_kept_entry_id: String::new(),
+                tokens_before: 0,
+                from_hook: false,
+                raw_json: entry.raw_json.clone(),
+            })
+            .collect(),
+    })
+}
+
 pub fn list_all_sessions(filter: SessionFilter) -> Vec<SessionRow> {
     let mut rows = Vec::new();
     rows.extend(list_opencode_sessions(&filter));
     rows.extend(list_pi_sessions(&filter));
     rows.extend(list_omp_sessions(&filter));
+    rows.extend(list_dsh_sessions(&filter));
     rows.sort_by_key(|row| std::cmp::Reverse(row.last_activity_ms));
     rows
 }
@@ -7770,6 +8141,7 @@ pub fn get_session_detail(
     match harness {
         Harness::Opencode | Harness::Opencode2 => get_opencode_session_detail(conn, session_id),
         Harness::Pi | Harness::Omp => Ok(get_pi_session_detail(conn, harness, session_id)),
+        Harness::Dsh => Ok(get_dsh_session_detail(conn, session_id)),
         Harness::ClaudeCode | Harness::Codex | Harness::Broca => Ok(None),
     }
 }
@@ -7799,6 +8171,25 @@ pub fn get_session_messages(
                 return Ok(Vec::new());
             };
             let Some(detail) = pi_sessions::read_pi_session_detail(&path) else {
+                return Ok(Vec::new());
+            };
+            Ok(detail
+                .messages
+                .iter()
+                .map(|message| SessionMessageRow {
+                    message_id: message.entry_id.clone(),
+                    timestamp_ms: message.timestamp_ms,
+                    role: message.role.clone(),
+                    text_preview: message.text_preview.clone(),
+                    raw_json: message.raw_json.clone(),
+                })
+                .collect())
+        }
+        Harness::Dsh => {
+            let Some(path) = dsh_sessions::find_dsh_session_log(session_id) else {
+                return Ok(Vec::new());
+            };
+            let Some(detail) = dsh_sessions::read_dsh_session_detail(&path) else {
                 return Ok(Vec::new());
             };
             Ok(detail
@@ -10584,6 +10975,156 @@ mod list_sessions_paged_tests {
         assert_eq!(paged.total, 4);
         assert_eq!(paged.rows.len(), 2);
         assert!(paged.has_more);
+    }
+}
+
+#[cfg(test)]
+mod dsh_store_tests {
+    use super::*;
+    use rusqlite::Connection;
+    use std::fs;
+
+    /// A minimal v4 log exercising every shape the reader claims to know:
+    /// header, title, user text, request/header provider/model, a billed
+    /// assistant step, a zero-usage step (must not count as cache activity),
+    /// and a compaction summary.
+    const V4_FIXTURE: &str = concat!(
+        "{\"type\":\"session\",\"version\":4,\"id\":\"session-main\",\"createdAt\":1000,\"cwd\":\"/tmp/proj\"}\n",
+        "{\"type\":\"session/title\",\"seq\":1,\"time\":1100,\"data\":{\"title\":\"Dsh title\"}}\n",
+        "{\"type\":\"user/message\",\"seq\":2,\"time\":1200,\"data\":{\"id\":\"u1\",\"content\":[{\"type\":\"text\",\"text\":\"hello dsh\"}]}}\n",
+        "{\"type\":\"request/header\",\"seq\":3,\"time\":1250,\"data\":{\"header\":{\"config\":{\"provider\":\"deepseek\",\"model\":\"dsh-model\"}}}}\n",
+        "{\"type\":\"assistant/message\",\"seq\":4,\"time\":1300,\"data\":{\"message\":{\"id\":\"a1\"},\"usage\":{\"inputTokens\":10,\"outputTokens\":5,\"cacheReadTokens\":80,\"totalTokens\":95},\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n",
+        "{\"type\":\"assistant/message\",\"seq\":5,\"time\":1400,\"data\":{\"message\":{\"id\":\"a2\"},\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"cacheReadTokens\":0,\"totalTokens\":0},\"content\":[{\"type\":\"text\",\"text\":\"zero\"}]}}\n",
+        "{\"type\":\"compaction/summary\",\"seq\":6,\"time\":1500,\"data\":{\"compactionId\":\"c1\",\"summary\":[{\"type\":\"text\",\"text\":\"folded\"}]}}\n",
+    );
+
+    struct DshEnv {
+        _root: tempfile::TempDir,
+        _guard: crate::test_env::EnvGuard,
+        storage: PathBuf,
+        dsh_home: PathBuf,
+    }
+
+    /// Isolated store + DSH home: the plugin's storage dir and `$DSH_HOME`
+    /// both point into a temp tree, so neither the machine's context.db nor
+    /// its real session logs can leak into the assertions.
+    fn dsh_env() -> DshEnv {
+        let root = tempfile::tempdir().expect("dsh test root");
+        let storage = root.path().join("mc");
+        let dsh_home = root.path().join("dsh");
+        fs::create_dir_all(&storage).expect("storage dir");
+        fs::create_dir_all(dsh_home.join("sessions")).expect("dsh sessions dir");
+        let mut guard = crate::test_env::EnvGuard::new();
+        guard.set("MAGIC_CONTEXT_STORAGE_DIR", &storage);
+        guard.set("DSH_HOME", &dsh_home);
+        crate::dsh_sessions::clear_caches_for_tests();
+        DshEnv {
+            _root: root,
+            _guard: guard,
+            storage,
+            dsh_home,
+        }
+    }
+
+    fn context_db(env: &DshEnv, with_session_meta: bool) -> Connection {
+        let conn =
+            Connection::open(env.storage.join("context.db")).expect("open context db");
+        if with_session_meta {
+            conn.execute_batch(
+                "CREATE TABLE session_meta (
+                    session_id TEXT PRIMARY KEY,
+                    harness TEXT NOT NULL DEFAULT 'pi',
+                    is_subagent INTEGER DEFAULT 0,
+                    last_response_time INTEGER
+                );",
+            )
+            .expect("create session_meta");
+        }
+        conn
+    }
+
+    fn write_dsh_log(dsh_home: &Path, session_id: &str, content: &str) -> PathBuf {
+        let dir = dsh_home.join("sessions").join("--tmp-proj--").join(session_id);
+        fs::create_dir_all(&dir).expect("session dir");
+        let path = dir.join("session.v4.jsonl.zstd");
+        let file = fs::File::create(&path).expect("log file");
+        zstd::stream::encode_all(file, content.as_bytes(), 0).expect("encode fixture");
+        path
+    }
+
+    #[test]
+    fn list_dsh_sessions_lists_store_rows_and_hosts_logs() {
+        let env = dsh_env();
+        let context = context_db(&env, true);
+        context
+            .execute("INSERT INTO session_meta VALUES ('session-main','dsh',0,500)", [])
+            .unwrap();
+        context
+            .execute("INSERT INTO session_meta VALUES ('session-mc-maint-9','dsh',0,NULL)", [])
+            .unwrap();
+        context
+            .execute("INSERT INTO session_meta VALUES ('pi-1','pi',0,700)", [])
+            .unwrap();
+        drop(context);
+        write_dsh_log(&env.dsh_home, "session-main", V4_FIXTURE);
+
+        let rows = list_dsh_sessions(&SessionFilter::default());
+        assert_eq!(rows.len(), 2, "only dsh rows list, and no log = no drop");
+        // The log's fresh mtime outranks the stale store stamp.
+        assert_eq!(rows[0].session_id, "session-main");
+        assert_eq!(rows[0].title, "Dsh title");
+        assert_eq!(rows[0].project_display, "proj");
+        assert!(!rows[0].is_subagent);
+        assert_eq!(rows[1].session_id, "session-mc-maint-9");
+        assert!(rows[1].is_subagent, "maintenance prefix implies subagent");
+        assert_eq!(rows[1].title, "", "a lost log degrades to a blank title");
+    }
+
+    #[test]
+    fn dsh_readers_degrade_without_tables_or_logs() {
+        let env = dsh_env();
+        let context = context_db(&env, false);
+        drop(context);
+
+        assert!(list_dsh_sessions(&SessionFilter::default()).is_empty());
+        assert!(get_dsh_session_detail(None, "session-main").is_none());
+        assert!(get_dsh_session_cache_events("session-main", None, None).is_empty());
+    }
+
+    #[test]
+    fn dsh_harness_parses_and_serializes_as_dsh() {
+        assert_eq!("dsh".parse::<Harness>().unwrap(), Harness::Dsh);
+        assert_eq!(Harness::Dsh.as_str(), "dsh");
+        assert_eq!(serde_json::to_string(&Harness::Dsh).unwrap(), "\"dsh\"");
+        assert!(Harness::Dsh.has_magic_context_plugin_state());
+    }
+
+    #[test]
+    fn dsh_detail_messages_and_cache_events_follow_log_shapes() {
+        let env = dsh_env();
+        write_dsh_log(&env.dsh_home, "session-main", V4_FIXTURE);
+
+        let detail = get_dsh_session_detail(None, "session-main").expect("detail");
+        assert_eq!(detail.messages_count, 3);
+        assert_eq!(detail.cache_events_count, 1, "zero-total usage is not a cache event");
+        assert_eq!(detail.pi_compaction_entries.len(), 1);
+        assert_eq!(detail.pi_compaction_entries[0].summary, "folded");
+        assert_eq!(detail.project_display, "proj");
+        assert!(detail.pi_jsonl_path.is_some());
+
+        let events = get_dsh_session_cache_events("session-main", None, None);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message_id, "a1");
+        assert_eq!(events[0].cache_read, 80);
+        assert_eq!(events[0].total_tokens, 95);
+
+        let messages = get_session_messages(Harness::Dsh, "session-main").unwrap();
+        assert_eq!(
+            messages.iter().map(|m| m.role.as_str()).collect::<Vec<_>>(),
+            vec!["user", "assistant", "assistant"]
+        );
+        assert_eq!(messages[0].text_preview, "hello dsh");
+        assert_eq!(messages[1].message_id, "a1");
     }
 }
 
