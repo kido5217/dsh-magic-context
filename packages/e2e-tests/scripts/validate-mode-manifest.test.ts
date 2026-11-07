@@ -200,7 +200,7 @@ describe("mode manifest validator", () => {
         const ordinary = validation.manifest.entries.find((entry) => entry.path === "tests/cache-invariants.test.ts");
         const opencode2 = validation.manifest.entries.find((entry) => entry.path === "tests/opencode2/runner.test.ts");
         expect(validation.manifest.entries.every((entry) => entry.hosts.length > 0)).toBe(true);
-        expect(smoke?.hosts).toEqual(["opencode", "opencode2", "pi", "omp"]);
+        expect(smoke?.hosts).toEqual(["opencode", "opencode2", "pi", "omp", "dsh"]);
         expect(ordinary?.hosts).toEqual(["opencode", "opencode2", "pi", "omp"]);
         expect(opencode2?.hosts).toEqual(["opencode2"]);
     });

@@ -9,7 +9,7 @@ export const MANIFEST_PATH = resolve(E2E_ROOT, "mode-manifest.json");
 const TEST_GLOB = "tests/**/*.test.ts";
 
 export const TIERS = ["both-modes", "ts-only", "rust-only", "excluded"] as const;
-export const HOSTS = ["opencode", "opencode2", "pi", "omp"] as const;
+export const HOSTS = ["opencode", "opencode2", "pi", "omp", "dsh"] as const;
 export type Tier = (typeof TIERS)[number];
 export type Mode = "ts" | "rust";
 export type Host = (typeof HOSTS)[number];
@@ -261,7 +261,7 @@ function parseArgs(args: string[]): { mode?: Mode; harness: HarnessSelection } {
             harness = value as HarnessSelection;
         } else if (arg === "--help" || arg === "-h") {
             console.log(
-                "Usage: validate-mode-manifest.ts [--mode ts|rust] [--harness all|opencode|opencode2|pi|omp]",
+                "Usage: validate-mode-manifest.ts [--mode ts|rust] [--harness all|opencode|opencode2|pi|omp|dsh]",
             );
             process.exit(0);
         } else {

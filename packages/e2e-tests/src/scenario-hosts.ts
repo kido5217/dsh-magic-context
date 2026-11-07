@@ -7,6 +7,7 @@ import type { HostHarness, HostKind, HostPromptOptions } from "./host-harness";
 import type { MockProvider } from "./mock-provider/server";
 import { OpenCode2TestHarness, type OpenCode2TestHarnessOptions } from "./opencode2-harness";
 import { PiTestHarness, type PiTestHarnessOptions } from "./pi-harness";
+import { DshTestHarness, type DshTestHarnessOptions } from "./dsh-harness";
 
 export interface ManifestDivergence {
     host: HostKind;
@@ -27,7 +28,8 @@ interface ScenarioManifest {
 export type ScenarioHarness = HostHarness & { readonly mock: MockProvider };
 export type ScenarioHarnessOptions = TestHarnessOptions &
     OpenCode2TestHarnessOptions &
-    PiTestHarnessOptions;
+    PiTestHarnessOptions &
+    DshTestHarnessOptions;
 
 const E2E_ROOT = resolve(import.meta.dir, "..");
 const manifest = JSON.parse(
@@ -62,16 +64,19 @@ export function forEachHost(
         );
     }
 
+    const liveGated = (host: HostKind) => host === "dsh" && !dshLaneEnabled();
+
     if (scenario === null) {
         const host = selected as HostKind;
         if (host === "opencode") register(host);
+        else if (liveGated(host)) describe.skip(`[${host}] (MC_DSH_E2E!=1)`, () => register(host));
         else describe(`[${host}]`, () => register(host));
         return;
     }
 
     for (const host of hosts) {
         const suiteName = host === "opencode" ? scenario : `${scenario} [${host}]`;
-        const define = host === selected ? describe : describe.skip;
+        const define = host === selected && !liveGated(host) ? describe : describe.skip;
         define(suiteName, () => register(host));
     }
 }
@@ -82,11 +87,27 @@ export async function createScenarioHarness(
 ): Promise<ScenarioHarness> {
     if (host === "opencode") return TestHarness.create(options);
     if (host === "opencode2") return OpenCode2TestHarness.create(options);
+    if (host === "dsh") {
+        if (!dshLaneEnabled()) {
+            throw new Error("the DSH e2e lane is live-gated: set MC_DSH_E2E=1 to run it");
+        }
+        return DshTestHarness.create(options);
+    }
     return PiTestHarness.create({ ...options, host });
 }
 
 export function isPiFamily(host: HostKind): host is "pi" | "omp" {
     return host === "pi" || host === "omp";
+}
+
+/**
+ * The DSH lane boots a real `dsh` binary and is therefore opt-in, mirroring
+ * the manifest selection the Pi lane uses: a lane run additionally requires
+ * MC_DSH_E2E=1, so a stray MC_E2E_HOST=dsh inside a normal suite collects the
+ * scenario as skipped instead of failing it.
+ */
+export function dshLaneEnabled(): boolean {
+    return process.env.MC_DSH_E2E === "1";
 }
 
 export async function createFreshSession(harness: ScenarioHarness): Promise<string> {

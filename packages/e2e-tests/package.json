@@ -9,6 +9,8 @@
     "test:opencode2": "bun scripts/ensure-shared-opencode2.ts && bun test --timeout 120000",
     "test:validate-manifest": "bun test scripts/validate-mode-manifest.test.ts scripts/check-rust-prerequisites.test.ts",
     "validate-mode-manifest": "bun scripts/validate-mode-manifest.ts --mode ts",
+    "dsh-files": "bun scripts/validate-mode-manifest.ts --mode ts --harness dsh",
+    "test:dsh": "bun ../../scripts/check-bun.mjs && MC_E2E_MODE=ts MC_E2E_HOST=dsh MC_DSH_E2E=1 NODE_ENV='' bun test --timeout 600000 $(bun scripts/validate-mode-manifest.ts --mode ts --harness dsh)",
     "adjudicate:thinking-block": "bash scripts/adjudicate-thinking-block.sh",
     "test:rust-e2e": "bun test --timeout 600000 --max-concurrency=1 tests/rust-*.test.ts",
     "measure:mid-turn-ab": "bun scripts/run-mid-turn-prefix-ab.ts",
