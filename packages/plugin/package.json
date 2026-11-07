@@ -100,6 +100,10 @@
     "./tui": {
       "types": "./src/tui/index.tsx",
       "import": "./src/tui/entry.mjs"
+    },
+    "./hooks/magic-context/inject-compartments": {
+      "types": "./src/hooks/magic-context/inject-compartments.ts",
+      "import": "./src/hooks/magic-context/inject-compartments.ts"
     }
   },
   "oc-plugin": [

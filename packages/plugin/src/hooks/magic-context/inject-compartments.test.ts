@@ -61,6 +61,7 @@ import {
     renderM1,
     renderMemoryBlockV2,
     renderMemoryLineV2,
+    renderSessionDelta,
     trimMemoriesToBudgetV2,
 } from "./inject-compartments";
 import { withRawMessageProvider } from "./read-session-chunk";
@@ -4787,5 +4788,57 @@ describe("m[0]/m[1] materialization", () => {
             m0ToolSetHashPrev: "tools-v1",
             m0ToolSetHashNew: "tools-v2",
         });
+    });
+});
+
+describe("renderSessionDelta — exported delta entry point (T040)", () => {
+    it("returns renderM1's bytes unchanged plus the delta's own accounting", () => {
+        db = makeDb();
+        createUserMemoryTable();
+        const projectDirectory = makeProjectDir();
+        insertUserMemory(db, "User strongly pushes back on untested changes.", []);
+        setProjectState(db, "__global__", { projectUserProfileVersion: 1 });
+        const options = {
+            db,
+            sessionId: SESSION_ID,
+            state: readStateFromMeta(),
+            projectPath: PROJECT_PATH,
+            projectDirectory,
+            injectDocs: false,
+            userProfileBudgetTokens: 10_000,
+        };
+        const baseline = materializeM0(options);
+
+        // Background churn: a new profile line, a new memory for the project.
+        insertUserMemory(db, "User expects changes to be tested.", []);
+        setProjectState(db, "__global__", { projectUserProfileVersion: 2 });
+        const fresh = insertMemory(db, {
+            projectPath: PROJECT_PATH,
+            category: "CONSTRAINTS",
+            content: "delta-only memory",
+        });
+
+        const deltaOptions = { ...options, state: readStateFromMeta() };
+        const viaLegacy = renderM1(
+            deltaOptions,
+            baseline.snapshotMarkers,
+            baseline.renderedMemoryIds,
+        );
+        const viaEntry = renderSessionDelta(
+            deltaOptions,
+            baseline.snapshotMarkers,
+            baseline.renderedMemoryIds,
+        );
+
+        // Byte-identical to the renderer every other harness consumes: the
+        // export adds an entry point, it changes no rendered bytes.
+        expect(viaEntry.text).toBe(viaLegacy);
+        expect(viaLegacy).toContain("<new-user-profile>");
+        expect(viaLegacy).toContain("delta-only memory");
+        // The metadata is the delta's own accounting, usable by a host that
+        // keeps a frozen baseline (DSH): which memories it just showed, and
+        // how much correction traffic the block carries.
+        expect(viaEntry.renderedMemoryIds).toContain(fresh.id);
+        expect(viaEntry.memoryUpdateCount).toBeGreaterThanOrEqual(0);
     });
 });
