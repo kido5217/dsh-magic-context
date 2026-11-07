@@ -15,9 +15,10 @@
  *
  * Durable bookkeeping:
  * - `session_meta.systemPromptHash` carries the pair fingerprint,
- *   `md5(baseline)|md5(delta)`; a restart rediscovers both nodes by matching
- *   that fingerprint against the adapter's own surface records, so a resumed
- *   session never re-emits folded content or stacks duplicate heads.
+ *   `md5(baseline)|md5(delta)|md5(render-identity)`; a restart rediscovers
+ *   both nodes by matching that fingerprint against the adapter's own
+ *   surface records, so a resumed session never re-emits folded content or
+ *   stacks duplicate heads.
  * - the baseline cursors are persisted by the core materializer itself
  *   (`session_meta.cached_m0_*`), which is what lets the delta (and the
  *   visible-memory filter) render against frozen state.
@@ -30,7 +31,7 @@
  * replacement is what guarantees the delta write invalidates no cached bytes
  * ahead of it; the fold (and a re-baseline) re-emits it after the tail.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type {
 	ImageAttachmentRef,
 	SaveImageAttachment,
@@ -51,6 +52,12 @@ import type { McReplacementContent } from "./events.js";
 import { BaselineRenderer } from "./head-baseline.js";
 import { readHeadCursors } from "./head-cursors.js";
 import { DeltaRenderer } from "./head-delta.js";
+import {
+	identityDigest,
+	md5,
+	pairFingerprint,
+	parsePairFingerprint,
+} from "./head-identity.js";
 import type { ManagedEdits, ShadowInfo } from "./managed-edits.js";
 
 /** The subset of the host attachment store the mural path needs. */
@@ -83,14 +90,11 @@ export interface HeadState {
 	readonly markers?: M0SnapshotMarkers;
 	/** Memory ids the baseline shows (the visible-memory filter input). */
 	readonly renderedMemoryIds?: readonly number[];
-}
-
-function md5(text: string): string {
-	return createHash("md5").update(text).digest("hex");
-}
-
-function pairFingerprint(baselineText: string, deltaText: string): string {
-	return `${md5(baselineText)}|${md5(deltaText)}`;
+	/**
+	 * Digest of the render contract this baseline was rendered under
+	 * (head-identity.ts). A mismatch on a routine pass forces ONE re-baseline.
+	 */
+	readonly identity?: string;
 }
 
 function textContent(text: string): McReplacementContent {
@@ -111,6 +115,8 @@ export class HeadManager {
 		private readonly route?: HistorianRoute,
 		/** Host attachment store; absent ⇒ murals never ship bytes. */
 		private readonly attachments?: MuralAttachments,
+		/** Model key used until a route is observed (per-model prompt surfaces). */
+		private readonly fallbackModelKey?: string,
 	) {
 		this.baseline = new BaselineRenderer(db, config, projectDir);
 		this.deltas = new DeltaRenderer(this.baseline);
@@ -126,10 +132,12 @@ export class HeadManager {
 	}
 
 	/**
-	 * One head pass. Baselines are never re-rendered here; the delta is
-	 * re-rendered against the frozen cursors and written only when its bytes
-	 * changed. A session with no in-memory pair first tries durable
-	 * rediscovery, then (if there is something to say) emits a fresh pair.
+	 * One head pass. The baseline is never re-rendered on a routine pass; the
+	 * delta is re-rendered against the frozen cursors and written only when
+	 * its bytes changed. A changed render identity (T048) is the one
+	 * exception: it forces exactly one re-baseline. A session with no
+	 * in-memory pair first tries durable rediscovery, then (if there is
+	 * something to say) emits a fresh pair.
 	 */
 	async refresh(
 		session: DshSession,
@@ -140,6 +148,21 @@ export class HeadManager {
 			this.pairs.set(context.mcSession, pair);
 		if (pair === undefined) {
 			if (!(await this.hasAnythingToSay(context))) return null;
+			return this.materializePair(session, context);
+		}
+		// Render-identity change (T048): one re-baseline, the pair's own nodes
+		// collapsing into the new baseline — history untouched, never per-pass
+		// churn (the stored identity matches again after this fold). A pair
+		// predating the identity segment folds once too.
+		const digest = this.currentIdentityDigest();
+		if (pair.identity !== digest) {
+			const covered =
+				pair.deltaSeq !== undefined ? [pair.seq, pair.deltaSeq] : [pair.seq];
+			const shadow = await this.rebaseline(session, context, covered);
+			if (shadow !== null) return shadow;
+			// The old pair nodes are gone (a host compaction absorbed them):
+			// re-materialize, which is fold-equivalent by definition.
+			this.forget(context.mcSession);
 			return this.materializePair(session, context);
 		}
 		const frozen =
@@ -236,26 +259,46 @@ export class HeadManager {
 		);
 	}
 
+	/** Canonical routed model once a step was observed; config fallback before. */
+	private currentModelKey(): string {
+		const route = this.route;
+		if (route !== undefined && route.provider !== "")
+			return `${route.provider}/${route.model}`;
+		return this.fallbackModelKey ?? "";
+	}
+
+	private currentIdentityDigest(): string {
+		return identityDigest({
+			config: this.config,
+			modelKey: this.currentModelKey(),
+			imageInput: this.route?.imageInput === true,
+		});
+	}
+
 	/**
 	 * Baseline decision: render m[0] through the core materializer (which
 	 * persists the new cursors) and record the pair fingerprint — baseline
-	 * bytes + the delta placeholder it shipped with.
+	 * bytes, the delta placeholder it shipped with, and the render identity.
 	 */
 	private async renderBaseline(context: HeadRenderContext): Promise<{
 		baselineText: string;
 		deltaText: string;
 		muralBytes?: Uint8Array;
+		identityDigest: string;
 	}> {
 		const base = this.baseline.materialize({
 			...context,
 			imageInput: this.route?.imageInput === true,
+			modelKey: this.currentModelKey(),
 		});
+		const digest = this.currentIdentityDigest();
 		updateSessionMeta(this.db, context.mcSession, {
-			systemPromptHash: pairFingerprint(base.text, base.m1Text),
+			systemPromptHash: pairFingerprint(base.text, base.m1Text, digest),
 		});
 		return {
 			baselineText: base.text,
 			deltaText: base.m1Text,
+			identityDigest: digest,
 			...(base.muralBytes !== undefined ? { muralBytes: base.muralBytes } : {}),
 		};
 	}
@@ -299,6 +342,7 @@ export class HeadManager {
 			baselineText: string;
 			deltaText: string;
 			muralBytes?: Uint8Array;
+			identityDigest: string;
 		},
 		ordered: readonly number[],
 	): Promise<ShadowInfo> {
@@ -323,6 +367,7 @@ export class HeadManager {
 			systemPromptHash: pairFingerprint(
 				rendered.baselineText,
 				rendered.deltaText,
+				rendered.identityDigest,
 			),
 		});
 		const cursors = this.cursors(context);
@@ -331,6 +376,7 @@ export class HeadManager {
 			text: rendered.baselineText,
 			deltaSeq,
 			deltaText: rendered.deltaText,
+			identity: rendered.identityDigest,
 			...(cursors !== undefined
 				? {
 						markers: cursors.markers,
@@ -355,7 +401,11 @@ export class HeadManager {
 			{
 				decision: async () => {
 					updateSessionMeta(this.db, context.mcSession, {
-						systemPromptHash: pairFingerprint(pair.text, text),
+						systemPromptHash: pairFingerprint(
+							pair.text,
+							text,
+							pair.identity ?? "",
+						),
 					});
 					return { text };
 				},
@@ -395,7 +445,11 @@ export class HeadManager {
 			{
 				decision: async () => {
 					updateSessionMeta(this.db, context.mcSession, {
-						systemPromptHash: pairFingerprint(pair.text, text),
+						systemPromptHash: pairFingerprint(
+							pair.text,
+							text,
+							pair.identity ?? "",
+						),
 					});
 					return { text };
 				},
@@ -422,9 +476,9 @@ export class HeadManager {
 		const cursors = this.cursors(context);
 		if (cursors === undefined) return undefined;
 		const state = getOrCreateSessionMeta(this.db, context.mcSession);
-		const hash = state.systemPromptHash ?? "";
-		const [baselineHash, deltaHash] = hash.split("|");
-		if (baselineHash === undefined || baselineHash === "") return undefined;
+		const parts = parsePairFingerprint(state.systemPromptHash ?? "");
+		if (parts === undefined) return undefined;
+		const { baselineHash, deltaHash } = parts;
 		let baselineSeq: number | undefined;
 		let baselineText: string | undefined;
 		let deltaSeq: number | undefined;
@@ -447,6 +501,9 @@ export class HeadManager {
 			text: baselineText,
 			...(deltaSeq !== undefined ? { deltaSeq } : {}),
 			deltaText: deltaText ?? "",
+			...(parts.identityDigest !== undefined
+				? { identity: parts.identityDigest }
+				: {}),
 			markers: cursors.markers,
 			renderedMemoryIds: cursors.renderedMemoryIds,
 		};

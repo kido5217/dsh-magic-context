@@ -170,7 +170,7 @@ describe("V2 live", () => {
 		const childHash = hashes.find(
 			(row) => row.is_subagent === 1 && row.system_prompt_hash !== "",
 		)?.system_prompt_hash;
-		expect(childHash).toMatch(/^[0-9a-f]{32}\|[0-9a-f]{32}$/);
+		expect(childHash).toMatch(/^[0-9a-f]{32}\|[0-9a-f]{32}\|[0-9a-f]{32}$/);
 		// …and every compartment is a fold of CHILD history (not a drop: this
 		// history had nothing the emergency lane could retire above its
 		// minimum). The unpressured parent produced none.

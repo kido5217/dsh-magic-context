@@ -12,10 +12,12 @@
  *    the baseline node carries an `image` content block next to its text,
  *    with the core's `<memory-mural>` guidance block in the text.
  */
+
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import { insertMemory } from "@magic-context/core/features/magic-context/memory/storage-memory";
@@ -69,13 +71,16 @@ function fakeAttachments(): FakeAttachments {
 		},
 		async saveImages(inputs) {
 			bytes.push(inputs[0]!.data);
-			return inputs.map((_, i) => ({
-				attachmentId: `att-${String(i)}`,
-				mediaType: "image/png",
-				bytes: 1_024,
-				width: 1_092,
-				height: 1_092,
-			}));
+			return inputs.map(
+				(_, i) =>
+					({
+						attachmentId: `att-${String(i)}`,
+						mediaType: "image/png",
+						bytes: 1_024,
+						width: 1_092,
+						height: 1_092,
+					}) as unknown as ImageAttachmentRef,
+			);
 		},
 	};
 }

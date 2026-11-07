@@ -262,6 +262,7 @@ export function mountAdapter(
 		opts.projectDir ?? process.cwd(),
 		opts.historianRoute,
 		opts.attachments,
+		opts.modelKey,
 	);
 	const historian = new Historian(
 		host,

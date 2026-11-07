@@ -39,6 +39,8 @@ export interface BaselineContext {
 	readonly projection?: DshLogProjection;
 	/** Routed model advertises image input (FR-006); unknown ⇒ false ⇒ no mural. */
 	readonly imageInput?: boolean;
+	/** Canonical routed model (`provider/model`) for per-model prompt surfaces. */
+	readonly modelKey?: string;
 }
 
 export interface BaselineResult {
@@ -84,11 +86,12 @@ export class BaselineRenderer {
 	 * construction for the baseline and every later delta, so a delta never
 	 * re-derives a policy the baseline froze.
 	 */
-	coreOptions(mcSession: string): M0M1RenderOptions {
+	coreOptions(mcSession: string, modelKey?: string): M0M1RenderOptions {
 		const memoryEnabled = this.config.memory?.enabled ?? true;
 		return {
 			db: this.db,
 			sessionId: mcSession,
+			...(modelKey !== undefined && modelKey !== "" ? { modelKey } : {}),
 			state: getOrCreateSessionMeta(this.db, mcSession),
 			projectPath: resolveProjectIdentityForSession(this.projectDir),
 			injectDocs: this.config.dreamer?.inject_docs !== false,
@@ -126,7 +129,7 @@ export class BaselineRenderer {
 			context.mcSession,
 		);
 		const result = materializeM0({
-			...this.coreOptions(context.mcSession),
+			...this.coreOptions(context.mcSession, context.modelKey),
 			...(mural !== undefined ? { mural: mural.options } : {}),
 		});
 		// Retired sources (T046): the v1 adapter cached its memory block in
