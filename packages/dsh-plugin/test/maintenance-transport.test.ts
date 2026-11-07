@@ -352,3 +352,27 @@ describe("hidden-agent transport", () => {
 		expect(last().disposed).toBe(1);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// T056 — crashed maintenance sessions are reaped at boot.
+// ---------------------------------------------------------------------------
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { reapMaintenanceOrphans } from "../src/maintenance/orphans.js";
+
+describe("maintenance orphan reaper", () => {
+	test("removes crashed maintenance sessions and nothing else", () => {
+		const root = mkdtempSync(join(tmpdir(), "mc-orphans-"));
+		const ws = join(root, "--proj--");
+		mkdirSync(join(ws, "session-mc-maint-dead"), { recursive: true });
+		writeFileSync(join(ws, "session-mc-maint-dead", "log.jsonl"), "{}\n");
+		mkdirSync(join(ws, "session-user"), { recursive: true });
+		mkdirSync(join(root, "--other--"), { recursive: true });
+		expect(reapMaintenanceOrphans(root)).toEqual(["session-mc-maint-dead"]);
+		expect(existsSync(join(ws, "session-mc-maint-dead"))).toBe(false);
+		expect(existsSync(join(ws, "session-user"))).toBe(true);
+		// An absent root is not a boot failure.
+		expect(reapMaintenanceOrphans(join(root, "nope"))).toEqual([]);
+	});
+});
