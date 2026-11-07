@@ -11,16 +11,23 @@
  * contributes only the DSH mapping (which nodes carry text, which primitive to
  * use) and never re-implements the pattern list.
  *
- * `dedup` is deliberately NOT bound here yet. The core's dedup selector
- * (`applyHeuristicCleanup`) selects in TOOL-TAG space and needs each tool tag to
- * carry `toolName`/`toolOwnerMessageId`; the adapter's tagger does not stamp
- * that identity yet, so a hand-rolled lookalike would be adapter policy rather
- * than the shared core's. The tagger work + binding is tracked as the remainder
- * of T024.
+ * `dedup`: the core's `applyHeuristicCleanup` selects in TOOL-TAG space and
+ * fingerprints a call as `(ownerMessageId, toolName, arguments)`, reading the
+ * host's own part shapes. This module supplies that adapter — the durable log
+ * projected into the selector's `{info, parts}` shape, with each `tool-call`
+ * block exposed as the `tool_use` form the core reads — plus minimal tag
+ * targets. The selector itself decides which duplicates are safe to retire
+ * (`DEDUP_SAFE_TOOLS`, protected tools, same-owner grouping) and performs the
+ * store-side drop; the drop lane materializes the surface edit on the next
+ * pass, exactly like supersession.
  */
 
 import type { ContentBlock } from "@deepseek-ai/dsh-llm/types";
+import { getActiveTagsBySession } from "@magic-context/core/features/magic-context/storage-tags";
+import type { TagEntry } from "@magic-context/core/features/magic-context/types";
+import { applyHeuristicCleanup } from "@magic-context/core/hooks/magic-context/heuristic-cleanup";
 import { stripSystemInjection } from "@magic-context/core/hooks/magic-context/system-injection-stripper";
+import type { TagTarget } from "@magic-context/core/hooks/magic-context/tag-messages";
 import type { NodeOpRequest } from "../surface/node-ops.js";
 import type { Lane, LaneContext, LaneSelection } from "./engine.js";
 
@@ -68,6 +75,122 @@ export const injectionStripLane: Lane = {
 						reason: `stripped injected regions from ${String(requests.length)} message(s)`,
 					}
 				: {}),
+		};
+	},
+};
+
+/** The host-shaped message the dedup selector fingerprints. */
+interface DedupMessage {
+	info: { id: string; role: string };
+	parts: unknown[];
+}
+
+/**
+ * Project the durable log into the selector's shape.
+ *
+ * Only assistant turns are needed: a duplicate is two calls with the same
+ * `(owner, toolName, arguments)`, and the owner is the assistant message. Each
+ * `tool-call` block is exposed as the core's `tool_use` part form, with parsed
+ * arguments — the fingerprint serializes them, so an unparsable argument blob
+ * is skipped rather than stringified into a false match.
+ */
+export function dedupMessages(context: LaneContext): {
+	messages: DedupMessage[];
+	tagNumbers: Map<DedupMessage, number>;
+} {
+	const messages: DedupMessage[] = [];
+	const tagNumbers = new Map<DedupMessage, number>();
+	const tagByMessageId = new Map<string, number>();
+	for (const tag of getActiveTagsBySession(context.db, context.mcSession)) {
+		if (tag.type === "message")
+			tagByMessageId.set(tag.messageId, tag.tagNumber);
+	}
+	for (const record of context.projection.records) {
+		if (record.role !== "assistant") continue;
+		const parts: unknown[] = [];
+		for (const block of record.blocks ?? []) {
+			if (block.type !== "tool-call") continue;
+			let input: unknown;
+			try {
+				input = JSON.parse(String(block.arguments ?? "{}"));
+			} catch {
+				continue;
+			}
+			parts.push({
+				type: "tool_use",
+				id: String(block.id),
+				name: String(block.name),
+				input,
+			});
+		}
+		if (parts.length === 0) continue;
+		const message: DedupMessage = {
+			info: { id: record.messageId, role: "assistant" },
+			parts,
+		};
+		messages.push(message);
+		const tagNumber = tagByMessageId.get(record.messageId);
+		if (tagNumber !== undefined) tagNumbers.set(message, tagNumber);
+	}
+	return { messages, tagNumbers };
+}
+
+/** Minimal tag targets: the selector may only decide, never write the surface. */
+function dedupTargets(tags: readonly TagEntry[]): Map<number, TagTarget> {
+	const targets = new Map<number, TagTarget>();
+	for (const tag of tags) {
+		targets.set(tag.tagNumber, {
+			canDrop: () => true,
+			setContent: () => false,
+			drop: () => "removed",
+			readInput: () => null,
+		} as unknown as TagTarget);
+	}
+	return targets;
+}
+
+export interface DedupSelection {
+	readonly deduplicatedTools: number;
+	readonly droppedInjections: number;
+}
+
+/** Run the core's dedup arm only (routine true, no emergency, no caveman). */
+export function selectDedup(context: LaneContext): DedupSelection {
+	const tags = getActiveTagsBySession(context.db, context.mcSession);
+	if (tags.length === 0) return { deduplicatedTools: 0, droppedInjections: 0 };
+	const { messages, tagNumbers } = dedupMessages(context);
+	if (messages.length === 0)
+		return { deduplicatedTools: 0, droppedInjections: 0 };
+	const result = applyHeuristicCleanup(
+		context.mcSession,
+		context.db,
+		dedupTargets(tags),
+		tagNumbers as unknown as Map<never, number>,
+		{
+			protectedTools: context.config.protected_tools,
+			protectedTagNumbers: new Set(),
+			protectedCutoff: null,
+			routine: true,
+		},
+		tags,
+	);
+	return {
+		deduplicatedTools: result.deduplicatedTools,
+		droppedInjections: result.droppedInjections,
+	};
+}
+
+export const dedupLane: Lane = {
+	name: "dedup",
+	frequency: "routine",
+	changeKind: "drop",
+	select(context: LaneContext): LaneSelection {
+		const selection = selectDedup(context);
+		if (selection.deduplicatedTools === 0) return { requests: [] };
+		return {
+			requests: [],
+			decision: async () => selection,
+			reason: `deduplicated ${String(selection.deduplicatedTools)} tool call(s)`,
 		};
 	},
 };

@@ -167,3 +167,86 @@ describe("supersession selector", () => {
 		expect(selection.tagIds).not.toContain(newestToolTag.tagNumber);
 	});
 });
+
+describe("dedup lane", () => {
+	test("retires the older of two identical tool calls from one owner", async () => {
+		const { selectDedup, dedupMessages } = await import(
+			"../src/lanes/heuristics.js"
+		);
+		const { getActiveTagsBySession: activeTags } = await import(
+			"@magic-context/core/features/magic-context/storage-tags"
+		);
+		const host = new TestDshHost();
+		const session = host.addSession({ id: "s-dedup" }, [0, 1, 2]);
+		// One assistant turn issuing the same grep twice (parallel calls), plus
+		// its two results. Same owner + same tool + same args ⇒ the older one is
+		// the duplicate.
+		session.seedMessage(0, "a1", "", "assistant", {
+			blocks: [
+				{
+					type: "tool-call",
+					id: "c1",
+					name: "grep",
+					arguments: '{"pattern":"alpha"}',
+				},
+				{
+					type: "tool-call",
+					id: "c2",
+					name: "grep",
+					arguments: '{"pattern":"alpha"}',
+				},
+			] as never,
+		});
+		session.seedMessage(1, "t1", "alpha result one", "tool", {
+			toolCallId: "c1",
+		});
+		session.seedMessage(2, "t2", "alpha result two", "tool", {
+			toolCallId: "c2",
+		});
+		const projection = projectDshSessionLog(session.logRecords());
+		const tagger = createTagger();
+		tagger.assignTag("s-dedup", "a1", "message", 1, db);
+		const tools = indexToolCalls(projection);
+		for (const seq of [1, 2]) {
+			const record = session
+				.logRecords()
+				.find((candidate) => candidate.seq === seq)!;
+			const identity = tools.forRecord(record)!;
+			tagger.assignToolTag(
+				"s-dedup",
+				identity.callId,
+				identity.ownerMessageId,
+				record.text.length,
+				db,
+				0,
+				identity.name,
+				identity.inputBytes,
+			);
+		}
+		const laneContext: LaneContext = {
+			session,
+			mcSession: "s-dedup",
+			projection,
+			rules: rulesForRole("primary"),
+			band: "execute",
+			permission: { permitted: true, reason: "scheduler" },
+			config: cfg,
+			db,
+			protectedMessageIds: new Set(),
+		};
+		// The adapter really exposes tool_use parts the core can fingerprint.
+		const { messages } = dedupMessages(laneContext);
+		expect(messages).toHaveLength(1);
+		expect(
+			(messages[0]!.parts as { type: string }[]).map((part) => part.type),
+		).toEqual(["tool_use", "tool_use"]);
+
+		const selection = selectDedup(laneContext);
+		expect(selection.deduplicatedTools).toBe(1);
+		// A dropped tag leaves the ACTIVE set: only the newer duplicate remains.
+		const toolTags = activeTags(db, "s-dedup").filter(
+			(tag) => tag.type === "tool",
+		);
+		expect(toolTags.map((tag) => tag.messageId)).toEqual(["c2"]);
+	});
+});
