@@ -50,6 +50,12 @@ export interface MockProvider {
 	readonly port: number;
 	/** Queue replies; each request consumes the next one (the last repeats). */
 	script(replies: readonly MockReply[]): void;
+	/**
+	 * Answer by inspecting the request instead of by position. Live gates that
+	 * involve a DELEGATED CHILD cannot rely on request order — the parent and
+	 * the child interleave — so they match on what the request actually carries.
+	 */
+	respond(handler: (request: Record<string, unknown>) => MockReply): void;
 	/** Every request the host made, in order. */
 	readonly requests: readonly MockRequest[];
 	/** Messages arrays of every chat completion request, for transcript assertions. */
@@ -77,6 +83,7 @@ function sseChunk(
 /** Start the mock provider on an ephemeral port. */
 export function startMockProvider(): MockProvider {
 	let replies: MockReply[] = [{ text: "ok" }];
+	let responder: ((request: Record<string, unknown>) => MockReply) | undefined;
 	let cursor = 0;
 	const requests: MockRequest[] = [];
 
@@ -213,8 +220,12 @@ export function startMockProvider(): MockProvider {
 		baseURL: `http://127.0.0.1:${String(port)}/v1`,
 		port,
 		script(next) {
+			responder = undefined;
 			replies = [...next];
 			cursor = 0;
+		},
+		respond(handler) {
+			responder = handler;
 		},
 		requests,
 		messagesOf(index = 0) {
