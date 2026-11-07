@@ -30,7 +30,7 @@ import { randomUUID } from "node:crypto";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { log } from "@magic-context/core/shared/logger";
-import type { DshSession } from "../host.js";
+import type { DshSession, TodoState } from "../host.js";
 import type { McRoleRules } from "../sessions/subagent-rules.js";
 import type { DshLogProjection } from "../surface/dsh-session-log.js";
 import type {
@@ -69,6 +69,8 @@ export interface LaneContext {
 	readonly protectedMessageIds: ReadonlySet<string>;
 	/** Current pressure reading, for lanes that plan against a token target. */
 	readonly pressure?: LanePressure;
+	/** The session's latest `todo/write` state, when it has one (T034). */
+	readonly todo?: TodoState;
 }
 
 /** The pressure facts a lane may price against. */
@@ -125,6 +127,7 @@ export interface LanePassRequest {
 	readonly db: ContextDatabase;
 	readonly protectedMessageIds?: ReadonlySet<string>;
 	readonly pressure?: LanePressure;
+	readonly todo?: TodoState;
 	readonly lanes: readonly Lane[];
 	readonly gates: LaneGates;
 }
@@ -151,6 +154,7 @@ export async function runLanePass(
 		db: request.db,
 		protectedMessageIds: request.protectedMessageIds ?? new Set<string>(),
 		...(request.pressure !== undefined ? { pressure: request.pressure } : {}),
+		...(request.todo !== undefined ? { todo: request.todo } : {}),
 	};
 	const outcomes: LaneOutcome[] = [];
 	let changed = false;

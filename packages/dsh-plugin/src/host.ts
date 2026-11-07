@@ -183,6 +183,18 @@ export interface RequestErrorInfo {
 	readonly failure: unknown;
 }
 
+/** One item of the agent's live todo list (`todo/write`). */
+export interface TodoItem {
+	readonly content: string;
+	readonly status: string;
+}
+
+/** The latest `todo/write` state of a session, with the seq that produced it. */
+export interface TodoState {
+	readonly seq: number;
+	readonly items: readonly TodoItem[];
+}
+
 /** One dispatched tool result, before it reaches the model (T008). */
 export interface PostToolInfo {
 	readonly sessionId: string;
@@ -208,6 +220,12 @@ export interface DshHost {
 	/** The underlying Cordis context (production only; doubles may stub it). */
 	readonly ctx: Context;
 	getSession(sessionId: string): DshSession | undefined;
+	/**
+	 * The session's latest `todo/write` state, or undefined when the agent never
+	 * wrote one. Log-only events are not part of the message projection, so this
+	 * is the adapter's one read of non-surface state (T034).
+	 */
+	todoState(sessionId: string): TodoState | undefined;
 	/** Pressure for the routed model; `undefined` ⇒ meter unavailable (fail-safe, D6). */
 	pressure(sessionId: string): PressureReading | undefined;
 	/** Auxiliary LLM call (historian/dreamer; request-only, no durable identity). */

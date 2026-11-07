@@ -24,6 +24,7 @@ import type {
 	PreStepDecision,
 	PreStepInfo,
 	RequestErrorInfo,
+	TodoState,
 } from "../src/host.js";
 import type { McReplacementContent } from "../src/surface/events.js";
 
@@ -173,6 +174,10 @@ export class McHost implements DshHost {
 		return () => {
 			this.preStepListeners.delete(listener);
 		};
+	}
+
+	todoState(_sessionId: string): TodoState | undefined {
+		return undefined;
 	}
 
 	onPostToolExecute(_listener: (info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>): () => void {

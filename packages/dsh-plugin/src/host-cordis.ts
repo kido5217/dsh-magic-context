@@ -56,6 +56,7 @@ import type {
 	PreStepInfo,
 	PressureReading,
 	RequestErrorInfo,
+	TodoState,
 } from "./host.js";
 import type { HistorianRoute } from "./sessions/historian.js";
 import type { DshLogMessageRecord } from "./surface/dsh-session-log.js";
@@ -340,6 +341,9 @@ export function createCordisHost(
 	return {
 		ctx,
 		getSession,
+		todoState(sessionId: string): TodoState | undefined {
+			return source?.todoState(sessionId);
+		},
 		pressure(sessionId: string): PressureReading | undefined {
 			const agent = ctx.agents.get(SessionId(sessionId));
 			if (!agent) return undefined;
@@ -525,12 +529,15 @@ export interface CordisSessionLogSource {
 		dshSessionId: string,
 	) => readonly DshLogMessageRecord[] | undefined;
 	prefetch(dshSessionId: string): Promise<void>;
+	/** Latest `todo/write` state seen while projecting the log (T034). */
+	todoState(dshSessionId: string): TodoState | undefined;
 }
 
 export function createCordisSessionLogSource(
 	ctx: Context,
 ): CordisSessionLogSource {
 	const cache = new Map<string, readonly DshLogMessageRecord[]>();
+	const todos = new Map<string, TodoState>();
 	return {
 		read: (dshSessionId) => cache.get(dshSessionId),
 		async prefetch(dshSessionId: string): Promise<void> {
@@ -583,7 +590,31 @@ export function createCordisSessionLogSource(
 				});
 			}
 			cache.set(dshSessionId, records);
+			// `todo/write` is log-only (no surface), so it never reaches the
+			// message projection; capture the newest one here while the snapshot
+			// is already in hand.
+			for (const event of snapshot.events as readonly {
+				type: string;
+				seq: number;
+				data?: unknown;
+			}[]) {
+				if (event.type !== "todo/write") continue;
+				const data = event.data as { items?: unknown } | undefined;
+				const items = Array.isArray(data?.items)
+					? (data.items as { content?: unknown; status?: unknown }[])
+					: [];
+				todos.set(dshSessionId, {
+					seq: Number(event.seq),
+					items: items
+						.filter((item) => typeof item.content === "string")
+						.map((item) => ({
+							content: String(item.content),
+							status: String(item.status ?? "pending"),
+						})),
+				});
+			}
 		},
+		todoState: (dshSessionId: string) => todos.get(dshSessionId),
 	};
 }
 

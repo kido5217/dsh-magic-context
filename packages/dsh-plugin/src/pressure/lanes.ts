@@ -53,6 +53,7 @@ import { noteNudgeLane } from "../lanes/note-nudge.js";
 import { supersessionLane } from "../lanes/reclaim.js";
 import { channel2Lease, reduceNudgeLane } from "../lanes/reduce-nudge.js";
 import { temporalLane } from "../lanes/temporal.js";
+import { todoDelivery, todoLane } from "../lanes/todo.js";
 import type { Historian } from "../sessions/historian.js";
 import { indexDshSessionHistory } from "../sessions/history-index.js";
 import type { SessionMapping } from "../sessions/mapping.js";
@@ -282,6 +283,7 @@ export class PressureLanes {
 			this.gates.resetEpisode(session.id);
 			// A new pressure episode re-arms the once-per-episode nudges.
 			channel2Lease.reset(state.mcSession);
+			todoDelivery.detachAll();
 		}
 		let changed = false;
 		const autoQueue =

@@ -23,6 +23,7 @@ import type {
 	PreStepDecision,
 	PreStepInfo,
 	RequestErrorInfo,
+	TodoState,
 } from "../src/host.js";
 import type { McReplacementContent } from "../src/surface/events.js";
 import type { DshLogMessageRecord } from "../src/surface/dsh-session-log.js";
@@ -256,6 +257,13 @@ export class TestDshHost implements DshHost {
 	}
 
 	readonly postToolListeners = new Set<(info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>>();
+
+	todoState(sessionId: string): TodoState | undefined {
+		return this.todoStates.get(sessionId);
+	}
+
+	/** Set a session's latest todo state (T034 fixtures). */
+	readonly todoStates = new Map<string, TodoState>();
 
 	onRequestError(_listener: (info: RequestErrorInfo) => boolean | Promise<boolean>): () => void {
 		return () => {};

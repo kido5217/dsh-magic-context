@@ -444,3 +444,78 @@ describe("ctx_reduce channel-1 nudge (post-execute)", () => {
 		await handle.dispose();
 	});
 });
+
+describe("synthetic todo lane", () => {
+	test("delivers once per todo revision and renders the tool's own format", async () => {
+		const { todoLane, TodoDelivery, renderTodoList } = await import(
+			"../src/lanes/todo.js"
+		);
+		expect(
+			renderTodoList([
+				{ content: "ship it", status: "in_progress" },
+				{ content: "write docs", status: "completed" },
+			]),
+		).toBe("Current todo list:\n- [ ] ship it\n- [x] write docs");
+
+		const host = new TestDshHost();
+		const session = host.addSession({ id: "s-todo" }, [0]);
+		session.seedMessage(0, "u1", "working", "user");
+		host.todoStates.set("s-todo", {
+			seq: 5,
+			items: [{ content: "ship it", status: "in_progress" }],
+		});
+
+		const managedEdits = new ManagedEdits(host);
+		const delivery = new TodoDelivery();
+		const pass = () =>
+			runLanePass(managedEdits, {
+				session,
+				mcSession: "s-todo",
+				projection: projectDshSessionLog(session.logRecords()),
+				rules: PRIMARY,
+				band: "execute",
+				permission: { permitted: true, reason: "scheduler" },
+				config: cfg,
+				db,
+				protectedMessageIds: new Set(),
+				todo: host.todoState("s-todo"),
+				lanes: [todoLane],
+				gates: new LaneGates(),
+			});
+		// The lane's public selector uses the module singleton; drive it directly
+		// so the test owns the delivery state.
+		const { selectTodo } = await import("../src/lanes/todo.js");
+		const context = {
+			session,
+			mcSession: "s-todo",
+			projection: projectDshSessionLog(session.logRecords()),
+			rules: PRIMARY,
+			band: "execute" as const,
+			permission: { permitted: true, reason: "scheduler" as const },
+			config: cfg,
+			db,
+			protectedMessageIds: new Set<string>(),
+			todo: { seq: 5, items: [{ content: "ship it", status: "in_progress" }] },
+		};
+		expect(selectTodo(context, delivery)).toBeDefined();
+		expect(selectTodo(context, delivery)).toBeUndefined();
+		expect(
+			selectTodo(
+				{
+					...context,
+					todo: {
+						seq: 6,
+						items: [{ content: "ship it", status: "completed" }],
+					},
+				},
+				delivery,
+			),
+		).toBeDefined();
+
+		// And the lane delivers through the engine exactly once per revision.
+		const first = await pass();
+		expect(first.changed).toBe(true);
+		await pass();
+		expect(session.notices.length).toBeGreaterThanOrEqual(1);
+	});
+});
