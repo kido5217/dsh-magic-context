@@ -141,6 +141,20 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
     (route/model switch, TTL, a native compaction); MC's contribution is limited to the
     body. Declared rather than silently skipped.
 
+19. **Declared — the local embedding runtime is not shipped in the DSH bundle.** Semantic
+    `ctx_search` and auto-search candidates need an embedding index. The core's local provider
+    runs Xenova/all-MiniLM-L6-v2 through onnxruntime plus a worker process
+    (`embedding-worker-process.ts`), neither of which this package ships: adding the native
+    runtime is a packaging change with per-platform binaries, not a code path. The adapter
+    therefore triggers the shared backfill only for REMOTE providers (`openai-compatible`,
+    `synapse`), where the core already runs the index off-thread over HTTP, and does nothing
+    for `local` (the default) — calling it there would fail on every pass instead of doing
+    useful work. Effect on a DSH-only machine with default config: hints and semantic search
+    stay empty while `memory.enabled` and the keyword/recency lanes work normally. Follow-up:
+    ship `embedding-worker-process.js` plus the onnx dependency, or document a remote provider
+    in the setup flow. Evidence: `src/pressure/lanes.ts` (`maybeBackfillEmbeddings`),
+    `test/us1-assistance.test.ts` (local/off is never triggered).
+
 ## Resolved since the v1 ledger was written
 
 - **Transcript FTS indexing — wired through the pass lane (T045).** The core

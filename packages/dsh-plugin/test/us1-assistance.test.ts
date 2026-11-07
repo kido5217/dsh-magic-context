@@ -200,3 +200,29 @@ describe("auto-search", () => {
 		expect(session.replacements).toHaveLength(0);
 	});
 });
+
+describe("embedding backfill gating", () => {
+	test("a local or off embedding provider is never triggered (no shipped runtime)", async () => {
+		const host = new TestDshHost();
+		const session = host.addSession({ id: "s-embed-off" }, [0, 1]);
+		session.seedMessage(0, "u1", "hello", "user");
+		session.seedMessage(1, "a1", "hi", "assistant");
+		// A full pass with the default (local) provider must not throw and must
+		// not try to spawn a worker this bundle does not ship.
+		const result = await runLanePass(new ManagedEdits(host), {
+			session,
+			mcSession: "s-embed-off",
+			projection: projectDshSessionLog(session.logRecords()),
+			rules: PRIMARY,
+			band: "execute",
+			permission: { permitted: true, reason: "scheduler" },
+			config: cfg,
+			db,
+			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
+			lanes: [],
+			gates: new LaneGates(),
+		});
+		expect(result.changed).toBe(false);
+	});
+});

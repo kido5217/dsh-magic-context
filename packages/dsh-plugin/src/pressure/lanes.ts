@@ -36,6 +36,7 @@ import type { ContextDatabase } from "@magic-context/core/features/magic-context
 import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
 import type { Tagger } from "@magic-context/core/features/magic-context/tagger";
 import { createTagger } from "@magic-context/core/features/magic-context/tagger";
+import { maybeAutoEmbedSessionBackfill } from "@magic-context/core/hooks/magic-context/auto-embed-session";
 import { log } from "@magic-context/core/shared/logger";
 import type { CompactionClaimRegistry } from "../compaction-claim.js";
 import type {
@@ -176,6 +177,35 @@ export class PressureLanes {
 		return state;
 	}
 
+	/**
+	 * Kick the shared embedding backfill for this session (T031).
+	 *
+	 * The index is what makes auto-search hints and semantic `ctx_search` exist at
+	 * all; the core runs it off-thread and coalesces per session. Only REMOTE
+	 * backends are triggered: the local runtime (onnx + a worker process) is not
+	 * shipped in this bundle, so calling it there would fail on every pass
+	 * instead of doing useful work. That packaging gap is declared in PARITY 19.
+	 */
+	private maybeBackfillEmbeddings(mcSession: string): void {
+		const provider = this.deps.config.embedding.provider;
+		if (provider === "local" || provider === "off") return;
+		try {
+			const projectIdentity = this.deps.projectDir;
+			maybeAutoEmbedSessionBackfill(
+				{
+					db: this.deps.db,
+					projectIdentity,
+					ensureRegistered: () => Promise.resolve(),
+				},
+				mcSession,
+			);
+		} catch (error) {
+			log(
+				`[dsh-magic-context] embedding backfill unavailable for ${mcSession}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
 	private readRecords(dshSessionId: string) {
 		return this.deps.readSessionLog(dshSessionId) ?? [];
 	}
@@ -244,6 +274,7 @@ export class PressureLanes {
 		const projection = projectDshSessionLog(this.readRecords(session.id));
 		this.tagProjectedMessages(state.mcSession, projection);
 		indexDshSessionHistory(this.deps.db, state.mcSession, projection);
+		this.maybeBackfillEmbeddings(state.mcSession);
 		// Host fact (0.2.2-rc.1, observed live): on the very first step of a fresh
 		// session the pre-step fires before the host appends the first
 		// system/message, so a plugin surface append here would sit above the
