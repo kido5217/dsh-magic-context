@@ -24,6 +24,12 @@ import type { DshLogProjection } from "../surface/dsh-session-log.js";
 /** Highest projected ordinal already scheduled for incremental indexing. */
 const indexedWatermarks = new Map<string, number>();
 
+/** R-05: release a closed session's index watermark (module-level so it
+ * must be pruned explicitly with the rest of the session-close sweep). */
+export function forgetIndexedWatermarks(mcSession: string): void {
+	indexedWatermarks.delete(mcSession);
+}
+
 /** Source revision accepted by the async reconciler (append-only proxy). */
 function revisionOf(projection: DshLogProjection): number {
 	return projection.rawMessages.length;

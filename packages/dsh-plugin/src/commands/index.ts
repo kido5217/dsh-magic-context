@@ -8,7 +8,10 @@ import type { CommandDefinition } from "@deepseek-ai/dsh-commands";
 import { CommandDefinitionId } from "@deepseek-ai/dsh-commands/brand";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import type { DreamTaskName } from "@magic-context/core/features/magic-context/dreamer/task-registry";
-import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
+import {
+	isUsableProjectIdentity,
+	resolveProjectIdentityForSession,
+} from "@magic-context/core/features/magic-context/memory/project-identity";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { executeFlush } from "@magic-context/core/hooks/magic-context/execute-flush";
 import type { PressureLanes } from "../pressure/lanes.js";
@@ -72,7 +75,11 @@ function lastDreamRunAt(
 	// scheduler write under), not the raw projectDir. N-06: a failed read is
 	// reported to the user, not silently rendered as "never".
 	const identity = resolveProjectIdentityForSession(projectDir);
-	if (identity === null)
+	// R-03: the resolver signals "unresolvable" with UNDEFINED (string |
+	// undefined), not null — bun:sqlite silently binds undefined as NULL, so
+	// a null-check let the false "not yet run" survive. The core ships
+	// isUsableProjectIdentity for exactly this check.
+	if (!isUsableProjectIdentity(identity))
 		return { lastRunAt: null, stateError: "no project identity for this cwd" };
 	try {
 		const row = db

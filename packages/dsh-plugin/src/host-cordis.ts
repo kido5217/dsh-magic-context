@@ -679,6 +679,7 @@ export function createCordisSessionLogSource(
  * the next fold without remounting.
  */
 export function createCordisHistorianRoute(): {
+	readonly forget: (sessionId: string) => void;
 	readonly observe: (
 		sessionId: string,
 		selection: ModelSelection | undefined,
@@ -701,6 +702,12 @@ export function createCordisHistorianRoute(): {
 			if (selection === undefined) return;
 			last = { selection, imageInput: modalities };
 			perSession.set(sessionId, last);
+		},
+		// R-05: the per-session observation is session state; release it on
+		// close like everything else resident (the last-observation fallback
+		// itself is a single scalar, not per-session growth).
+		forget: (sessionId: string) => {
+			perSession.delete(sessionId);
 		},
 		route: {
 			get provider(): string {

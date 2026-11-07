@@ -210,7 +210,10 @@ export function selectDedup(context: LaneContext): DedupSelection | null {
  * fire through DSH's tag targets (no `getContent`), so tool duplicates are
  * the whole work question.
  */
-const DEDUP_SAFE_TOOLS = new Set([
+// R-07: exported so the drift-pinning test can compare it against the core
+// list literally (`test/dedup-mirror.test.ts`) — the mirror must change only
+// when the core's changes.
+export const DEDUP_SAFE_TOOLS = new Set([
 	"grep",
 	"read",
 	"glob",
@@ -271,7 +274,10 @@ export function dedupWorkExists(context: LaneContext): boolean {
 			.filter((tag) => context.protectedMessageIds.has(tag.messageId))
 			.map((tag) => tag.tagNumber),
 	);
-	const protectedToolTags = protectedToolTagNumbers(tags, context.config.protected_tools);
+	const protectedToolTags = protectedToolTagNumbers(
+		tags,
+		context.config.protected_tools,
+	);
 	const groups = new Map<string, (typeof tags)[number][]>();
 	for (const [composite, fingerprint] of fingerprints) {
 		const tag = byComposite.get(composite);

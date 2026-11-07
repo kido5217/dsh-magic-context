@@ -178,6 +178,11 @@ export class Channel1Tracker {
 		state.lastNudgeLevel = "";
 	}
 
+	// R-05: release one closed session's tracker state.
+	forget(sessionId: string): void {
+		this.states.delete(sessionId);
+	}
+
 	detachAll(): void {
 		this.states.clear();
 	}

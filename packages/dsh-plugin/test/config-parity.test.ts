@@ -454,3 +454,94 @@ describe("loadDshConfig project-tier trust (N-01)", () => {
 		}
 	});
 });
+
+describe("loadDshConfig user-layer recovery and profiles (R-01/R-02)", () => {
+	const root = mkdtempSync(join(tmpdir(), "mc-r012-"));
+
+	function withHome<T>(home: string, fn: () => T): T {
+		const prev = process.env.XDG_CONFIG_HOME;
+		process.env.XDG_CONFIG_HOME = home;
+		try {
+			return fn();
+		} finally {
+			if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = prev;
+		}
+	}
+
+	test("R-01: invalid user value + project layer degrades to defaults, not a failed load", () => {
+		const xdg = join(root, "xdg-r01");
+		mkdirSync(join(xdg, "cortexkit"), { recursive: true });
+		writeFileSync(
+			join(xdg, "cortexkit", "magic-context.jsonc"),
+			// A KNOWN field with a wrong type — unknown keys would just
+			// strip, and the point is a user layer the schema rejects.
+			JSON.stringify({ language: "de", execute_threshold_percentage: "soon" }),
+		);
+		const repo = join(root, "r01-repo");
+		mkdirSync(join(repo, ".cortexkit"), { recursive: true });
+		writeFileSync(
+			join(repo, ".cortexkit", "magic-context.jsonc"),
+			JSON.stringify({ execute_threshold_percentage: 30 }),
+		);
+		// Before R-01 this THREW (bare parse of the user layer inside the
+		// project-tier branch) — the mount catch made the whole plugin inert.
+		const loaded = withHome(xdg, () => loadDshConfig({ cwd: repo }));
+		const all = loaded.warnings.join("\n");
+		expect(all).toContain("threshold constraints skipped");
+		// The corrupt field was clamped away by the raise-only step (project
+		// override 30 vs the default 65 base); the VALID user intent survives.
+		expect(all).toContain("Ignoring execute_threshold_percentage");
+		expect(loaded.config.execute_threshold_percentage).toBe(65);
+		expect(loaded.config.language).toBe("de");
+	});
+
+	test("R-02: the selected profile overlay merges over the user base", () => {
+		const xdg = join(root, "xdg-r02");
+		mkdirSync(join(xdg, "cortexkit"), { recursive: true });
+		writeFileSync(
+			join(xdg, "cortexkit", "magic-context.jsonc"),
+			JSON.stringify({
+				profile: "work",
+				profiles: {
+					work: { historian: { pi: { model: "anthropic/work-model" } } },
+				},
+				historian: { pi: { model: "anthropic/base-model" } },
+			}),
+		);
+		const repo = join(root, "r02-repo");
+		mkdirSync(repo, { recursive: true });
+		const loaded = withHome(xdg, () => loadDshConfig({ cwd: repo }));
+		const historian = loaded.config.historian as unknown as Record<
+			string,
+			Record<string, unknown>
+		>;
+		expect(historian.pi?.model).toBe("anthropic/work-model");
+		// The resolved selector survives as status metadata, same as core.
+		expect(loaded.config.profile).toBe("work");
+	});
+
+	test("R-02: an unknown profile name warns and keeps the base config", () => {
+		const xdg = join(root, "xdg-r03");
+		mkdirSync(join(xdg, "cortexkit"), { recursive: true });
+		writeFileSync(
+			join(xdg, "cortexkit", "magic-context.jsonc"),
+			JSON.stringify({
+				profile: "vacation",
+				profiles: {
+					work: { historian: { pi: { model: "anthropic/work-model" } } },
+				},
+				historian: { pi: { model: "anthropic/base-model" } },
+			}),
+		);
+		const repo = join(root, "r03-repo");
+		mkdirSync(repo, { recursive: true });
+		const loaded = withHome(xdg, () => loadDshConfig({ cwd: repo }));
+		const historian = loaded.config.historian as unknown as Record<
+			string,
+			Record<string, unknown>
+		>;
+		expect(historian.pi?.model).toBe("anthropic/base-model");
+		expect(loaded.warnings.join("\n").toLowerCase()).toContain("profile");
+	});
+});

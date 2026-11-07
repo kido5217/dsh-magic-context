@@ -13,6 +13,7 @@ import {
 	cortexKitProjectConfigBasePath,
 	cortexKitUserConfigBasePath,
 } from "@magic-context/core/config/migrate-config-location";
+import { resolveConfigProfile } from "@magic-context/core/config/profiles";
 import {
 	constrainProjectThresholdOverrides,
 	dropInheritedEmbeddingKeyOnRedirect,
@@ -124,26 +125,52 @@ export function loadDshConfig(
 	for (const warning of stripUnsafeProjectConfigFields(projectRaw)) {
 		warnings.push(`[project config] ${warning}`);
 	}
-	const raw = mergeRaw(userRaw, projectRaw);
+	// R-02 (FR-022): MC profile selection rides the core selector at the same
+	// user→project choke point every other harness uses — `profiles` are
+	// user-owned, the selector may come from either tier (project wins), the
+	// validated overlay merges over the user base BEFORE the untrusted
+	// project layer, and the raw selector/declarations are consumed here.
+	const profileResolution = resolveConfigProfile({ userRaw, projectRaw });
+	for (const warning of profileResolution.warnings) {
+		warnings.push(`[config] ${warning}`);
+	}
+	const trustedProfiledRaw = mergeRaw(
+		profileResolution.userBase,
+		profileResolution.overlay,
+	);
+	const raw = mergeRaw(trustedProfiledRaw, profileResolution.projectBase);
 	if (Object.keys(projectRaw).length > 0) {
 		for (const warning of dropInheritedEmbeddingKeyOnRedirect(
 			projectRaw,
 			raw,
-			userRaw,
+			profileResolution.userBase,
 		)) {
 			warnings.push(`[project config] ${warning}`);
 		}
+		// R-01: an invalid USER layer must stay the documented field-level
+		// degrade (defaults + warning, as the tail below and the core loader
+		// do) — it must not become fatal just because an untrusted project
+		// layer exists. Failure here only skips the raise-only constrain step,
+		// whose trusted base is unreadable; the merge still rides the tail.
+		const trustedBase = MagicContextConfigSchema.safeParse(trustedProfiledRaw);
+		if (!trustedBase.success) {
+			warnings.push(
+				"[user config] schema validation failed; threshold constraints skipped, tail recovery will apply",
+			);
+		}
 		for (const warning of constrainProjectThresholdOverrides({
 			mergedRaw: raw,
-			projectRaw,
-			trustedBaseConfig: MagicContextConfigSchema.parse(userRaw),
+			projectRaw: profileResolution.projectBase,
+			trustedBaseConfig: trustedBase.success
+				? trustedBase.data
+				: MagicContextConfigSchema.parse({}),
 		})) {
 			warnings.push(`[project config] ${warning}`);
 		}
 		const restored = restoreTrustedValuesOverInvalidProjectValues({
 			mergedRaw: raw,
-			trustedRaw: userRaw,
-			projectRaw,
+			trustedRaw: trustedProfiledRaw,
+			projectRaw: profileResolution.projectBase,
 			collectIssuePaths: collectDshSchemaIssuePaths,
 		});
 		for (const warning of restored.warnings) {
@@ -152,13 +179,18 @@ export function loadDshConfig(
 	}
 	const parsed = MagicContextConfigSchema.safeParse(raw);
 	if (parsed.success) {
+		if (profileResolution.activeProfile !== undefined)
+			parsed.data.profile = profileResolution.activeProfile;
 		return { config: parsed.data, warnings, loadedFromPaths };
 	}
 	warnings.push(
 		`[config] schema validation failed (${parsed.error.issues.length} issue(s)); using defaults`,
 	);
+	const fallback = MagicContextConfigSchema.parse({});
+	if (profileResolution.activeProfile !== undefined)
+		fallback.profile = profileResolution.activeProfile;
 	return {
-		config: MagicContextConfigSchema.parse({}),
+		config: fallback,
 		warnings,
 		loadedFromPaths,
 	};

@@ -230,7 +230,14 @@ export class DropApplier {
 		}
 		const queued = getPendingOps(this.db, mcSession).map((op) => op.tagId);
 		const candidates = new Set<number>([...queued, ...queueable]);
-		if (candidates.size === 0) return null;
+		// R-04: the N-04 durable repair set must ALSO gate the pass — a tag
+		// left dropped-but-unmaterialized by a crash is neither queued nor
+		// active, so a session that goes quiet after the crash would keep
+		// serving full content for a store-dropped node until some unrelated
+		// queue event finally started a pass. The consult is the same read-only
+		// query the decision re-runs inside the bracket.
+		const repairs = this.droppedButUnmaterialized(mcSession, projection);
+		if (candidates.size === 0 && repairs.length === 0) return null;
 
 		const changeId = `mc-drop-${randomUUID()}`;
 		const shadows: ShadowInfo[] = [];
@@ -272,7 +279,9 @@ export class DropApplier {
 					// Already materialized: the placeholder is in the served
 					// bytes. Re-writing the same bytes every pass would be a
 					// no-op at best; skip so a settled drop costs nothing.
-					if ((record.text ?? "").includes(buildReplacementContent(tag.tagNumber)))
+					if (
+						(record.text ?? "").includes(buildReplacementContent(tag.tagNumber))
+					)
 						continue;
 					targets.push({ tagNumber: tag.tagNumber, record });
 				}
