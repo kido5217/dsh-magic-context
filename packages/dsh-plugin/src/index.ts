@@ -49,7 +49,11 @@ import {
 	OverflowRecoveryGate,
 	recoverOverflow,
 } from "./lanes/overflow.js";
-import { Channel1Tracker, decideChannel1For } from "./lanes/reduce-nudge.js";
+import {
+	Channel1Tracker,
+	channel2Lease,
+	decideChannel1For,
+} from "./lanes/reduce-nudge.js";
 import {
 	type MaintenanceHandle,
 	maintenanceRunnable,
@@ -63,6 +67,7 @@ import {
 import { PressureLanes } from "./pressure/lanes.js";
 import { PressureMeter } from "./pressure/meter.js";
 import { Historian, type HistorianRoute } from "./sessions/historian.js";
+import { forgetIndexedWatermarks } from "./sessions/history-index.js";
 import { SessionMapping } from "./sessions/mapping.js";
 import { rulesForRole } from "./sessions/subagent-rules.js";
 import {
@@ -350,8 +355,17 @@ export function mountAdapter(
 		"session-close-pruning",
 		() =>
 			host.onSessionClosed?.((sessionId) => {
+				// R-05: the mc-keyed residuals (nudge tracker, delivery
+				// lease, history watermark) ride the mapping's mcSession —
+				// capture it before the mapping itself is released.
+				const mapped = mapping.get(sessionId);
 				lanes.detach(sessionId);
 				compaction.detach(sessionId);
+				if (mapped !== undefined) {
+					channel1.forget(mapped.mcSession);
+					channel2Lease.reset(mapped.mcSession);
+					forgetIndexedWatermarks(mapped.mcSession);
+				}
 				mapping.remove(sessionId);
 				meter.forget(sessionId);
 				head.forget(sessionId);
@@ -467,6 +481,11 @@ export async function apply(
 		// the adapter owns exactly one listener and sequences its steps inside it.)
 		const sessionLog = createCordisSessionLogSource(ctx);
 		const historian = createCordisHistorianRoute();
+		// R-05: prune the per-session model observation on session close
+		// (idempotent; a hot-reload double-registration is harmless).
+		ctx.on("agent/disposed", (payload) => {
+			historian.forget(payload.agent.session.id);
+		});
 		const cordisHost = createCordisHost(ctx, {
 			sessionLog,
 			observeModel: historian.observe,
@@ -581,15 +600,23 @@ export async function apply(
 			ctx.effect(() => {
 				let armed = true;
 				let retryAt = Date.now() + 15_000;
+				// R-06: one open in flight at a time — a heavily locked WAL
+				// can keep an attempt pending past the retry interval, and two
+				// successes would mount two lane sets over one store. The
+				// post-await `armed` re-check is the same double-mount fence
+				// for the reverse ordering.
+				let inFlight = false;
 				const off: () => void = ctx.on("agent/pre-step", (_payload, next) => {
-					if (Date.now() >= retryAt) {
+					if (!inFlight && Date.now() >= retryAt) {
 						retryAt = Date.now() + 15_000;
+						inFlight = true;
 						void openDatabaseAsync({
 							dbPath,
 							nativeTurnDeadlines: true,
 						})
 							.then((again) => {
-								if (!again) return undefined;
+								inFlight = false;
+								if (!again || !armed) return undefined;
 								armed = false;
 								off();
 								log(
@@ -597,7 +624,9 @@ export async function apply(
 								);
 								return mount(again);
 							})
-							.catch(() => undefined);
+							.catch(() => {
+								inFlight = false;
+							});
 					}
 					if (armed && block)
 						return Promise.resolve({ kind: "reject" } as const);

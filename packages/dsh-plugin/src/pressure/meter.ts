@@ -56,7 +56,10 @@ export class PressureMeter {
 	// min(advertised, learned) — the same doctrine as the core, which persists
 	// learned limits. Wired once from the overflow ledger; a meter without a
 	// ledger prices against the advertised window only.
-	private windowOverlay?: (sessionId: string, advertised: number) => number | undefined;
+	private windowOverlay?: (
+		sessionId: string,
+		advertised: number,
+	) => number | undefined;
 
 	setWindowOverlay(
 		overlay: (sessionId: string, advertised: number) => number | undefined,
@@ -95,7 +98,9 @@ export class PressureMeter {
 		}
 		const learned = this.windowOverlay?.(sessionId, window);
 		const effective =
-			learned !== undefined && learned > 0 && learned < window ? learned : window;
+			learned !== undefined && learned > 0 && learned < window
+				? learned
+				: window;
 		const percentage = Math.min(100, (tokens / effective) * 100);
 		return {
 			percentage,
