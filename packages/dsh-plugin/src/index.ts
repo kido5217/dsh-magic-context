@@ -414,9 +414,29 @@ export async function apply(
 	const dbPath = join(getMagicContextStorageDir(), "context.db");
 	const db = await openDatabaseAsync({ dbPath, nativeTurnDeadlines: true });
 	if (!db) {
-		log(
-			"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run",
-		);
+		// F-06: with the fail-closed key armed (default), deterministic
+		// inoperability is loud — every primary step is refused with a
+		// recoverable-error notice instead of silently falling through to
+		// host-native compaction (core `fail-closed-block.ts` doctrine).
+		if (loaded.config.fail_closed_blocking !== false) {
+			log(
+				"[dsh-magic-context] shared store unavailable; fail-closed: steps are refused until the store is recoverable",
+			);
+			ctx.effect(() => {
+				const off = ctx.on(
+					"agent/pre-step",
+					(_payload: unknown, _next: unknown) =>
+						Promise.resolve({ kind: "reject" } as const),
+				);
+				return () => {
+					off();
+				};
+			}, "dsh-magic-context-fail-closed");
+		} else {
+			log(
+				"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run",
+			);
+		}
 		return;
 	}
 	process.once("exit", () => {
