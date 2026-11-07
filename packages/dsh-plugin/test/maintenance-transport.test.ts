@@ -356,7 +356,13 @@ describe("hidden-agent transport", () => {
 // ---------------------------------------------------------------------------
 // T056 — crashed maintenance sessions are reaped at boot.
 // ---------------------------------------------------------------------------
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reapMaintenanceOrphans } from "../src/maintenance/orphans.js";
@@ -369,11 +375,27 @@ describe("maintenance orphan reaper", () => {
 		writeFileSync(join(ws, "session-mc-maint-dead", "log.jsonl"), "{}\n");
 		mkdirSync(join(ws, "session-user"), { recursive: true });
 		mkdirSync(join(root, "--other--"), { recursive: true });
+		// N-10 age fence: mark the crashed session's files a day old — the
+		// reaper only removes directories that have seen no activity.
+		const past = new Date(Date.now() - 25 * 60 * 60 * 1000);
+		utimesSync(join(ws, "session-mc-maint-dead", "log.jsonl"), past, past);
+		utimesSync(join(ws, "session-mc-maint-dead"), past, past);
 		expect(reapMaintenanceOrphans(root)).toEqual(["session-mc-maint-dead"]);
 		expect(existsSync(join(ws, "session-mc-maint-dead"))).toBe(false);
 		expect(existsSync(join(ws, "session-user"))).toBe(true);
 		// An absent root is not a boot failure.
 		expect(reapMaintenanceOrphans(join(root, "nope"))).toEqual([]);
+	});
+
+	test("a maintenance session a live sibling may still own is spared (N-10)", () => {
+		const root = mkdtempSync(join(tmpdir(), "mc-orphans-"));
+		const ws = join(root, "--proj--");
+		// Fresh directory: a concurrent harness process could be writing it
+		// RIGHT NOW; boot must not pull the directory out from under it.
+		mkdirSync(join(ws, "session-mc-maint-alive"), { recursive: true });
+		writeFileSync(join(ws, "session-mc-maint-alive", "log.jsonl"), "{}\n");
+		expect(reapMaintenanceOrphans(root)).toEqual([]);
+		expect(existsSync(join(ws, "session-mc-maint-alive"))).toBe(true);
 	});
 });
 
