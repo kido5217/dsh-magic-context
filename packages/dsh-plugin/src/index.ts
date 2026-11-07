@@ -448,32 +448,11 @@ export async function apply(
 		);
 		db = null;
 	}
-	if (!db) {
-		// F-06: with the fail-closed key armed (default), deterministic
-		// inoperability is loud — every primary step is refused with a
-		// recoverable-error notice instead of silently falling through to
-		// host-native compaction (core `fail-closed-block.ts` doctrine).
-		if (loaded.config.fail_closed_blocking !== false) {
-			log(
-				"[dsh-magic-context] shared store unavailable; fail-closed: steps are refused until the store is recoverable",
-			);
-			ctx.effect(() => {
-				const off = ctx.on(
-					"agent/pre-step",
-					(_payload: unknown, _next: unknown) =>
-						Promise.resolve({ kind: "reject" } as const),
-				);
-				return () => {
-					off();
-				};
-			}, "dsh-magic-context-fail-closed");
-		} else {
-			log(
-				"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run",
-			);
-		}
-		return;
-	}
+	// N-07: the mount body is a callable so the fail-closed arm can complete
+	// it LATER, when a transiently unavailable store answers again.
+	const mount = async (
+		store: NonNullable<Awaited<ReturnType<typeof openDatabaseAsync>>>,
+	): Promise<void> => {
 	process.once("exit", () => {
 		void closeDatabase();
 	});
@@ -490,7 +469,7 @@ export async function apply(
 		sessionLog,
 		observeModel: historian.observe,
 	});
-	const handle = mountAdapter(cordisHost, loaded.config, db, {
+	const handle = mountAdapter(cordisHost, loaded.config, store, {
 		readSessionLog: sessionLog.read,
 		historianRoute: historian.route,
 		projectDir: cwd,
@@ -500,7 +479,7 @@ export async function apply(
 	// [T067 commands] the six ctx-* slash commands, dispatched by interactive
 	// surfaces against the agent that received them.
 	const disposeCommands = registerCommands({
-		db,
+			db: store,
 		config: loaded.config,
 		lanes: handle.lanes,
 		version: packageMetadata.version,
@@ -533,7 +512,7 @@ export async function apply(
 						createDshPrimerRawProviderFactory(historySource),
 					ctx,
 					llmStream: (options) => cordisHost.llmStream(options),
-					db,
+					db: store,
 					config: loaded.config,
 					projectDir: cwd,
 					projectIdentity: identity,
@@ -548,6 +527,91 @@ export async function apply(
 			activeMaintenance = maintenance;
 		}
 	}
+	};
+
+	if (!db) {
+		// N-07(a): a transient lock at plugin load — another harness
+		// mid-migration, a momentary FS failure — must not latch refusals for
+		// the process lifetime. Two backed-off attempts first; the arm below
+		// then keeps retrying lazily per step.
+		for (const delayMs of [250, 1_000]) {
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+			try {
+				db = await openDatabaseAsync({
+					dbPath,
+					nativeTurnDeadlines: true,
+				});
+				break;
+			} catch {
+				db = null;
+			}
+		}
+	}
+	if (!db) {
+		// N-07(b): core doctrine — with `compaction.enabled: false` the
+		// fail-closed gate is INERT. The knowledge layer degrades, but the
+		// user keeps a usable turn; refusing steps here would strand sessions
+		// the user could still run (subagents included).
+		const compactionOff = loaded.config.compaction?.enabled === false;
+		// N-07(c): when the arm is skipped, note the coverage truth: the
+		// bundle patch disables the host's native `compaction-basic` engine
+		// and this run never registered MC's — sessions grow to the provider
+		// wall unless the store returns (the lazy retry below remounts MC and
+		// coverage resumes) or the profile re-enables the native row by id.
+		const block =
+			loaded.config.fail_closed_blocking !== false && !compactionOff;
+		if (compactionOff) {
+			log(
+				"[dsh-magic-context] shared store unavailable; compaction.enabled=false ⇒ fail-closed is inert: turns pass, the knowledge layer stays degraded until the next start",
+			);
+		} else if (block) {
+			log(
+				"[dsh-magic-context] shared store unavailable; fail-closed: steps are refused until the store is recoverable (retried lazily)",
+			);
+		} else {
+			log(
+				"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run — sessions have NO active compaction (the native engine is disabled by the bundle patch; a profile may re-enable the `compaction-basic` row by id), and a mid-run store recovery remounts MC lazily",
+			);
+		}
+		if (!compactionOff) {
+			// N-07(a): the arm retries the open lazily; a successful retry
+			// completes the mount mid-run and the refusals stop by themself.
+			ctx.effect(() => {
+				let armed = true;
+				let retryAt = Date.now() + 15_000;
+				const off: () => void = ctx.on(
+					"agent/pre-step",
+					(_payload, next) => {
+						if (Date.now() >= retryAt) {
+							retryAt = Date.now() + 15_000;
+							void openDatabaseAsync({
+								dbPath,
+								nativeTurnDeadlines: true,
+							})
+								.then((again) => {
+									if (!again) return undefined;
+									armed = false;
+									off();
+									log(
+										"[dsh-magic-context] shared store recovered; Magic Context mounts mid-run",
+									);
+									return mount(again);
+								})
+								.catch(() => undefined);
+						}
+						if (armed && block)
+							return Promise.resolve({ kind: "reject" } as const);
+						return next();
+					},
+				);
+				return () => {
+					off();
+				};
+			}, "dsh-magic-context-fail-closed");
+		}
+		return;
+	}
+	await mount(db);
 }
 
 export type { McFoldCallback } from "./compaction-claim.js";

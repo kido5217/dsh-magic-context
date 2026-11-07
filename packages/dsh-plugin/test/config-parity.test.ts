@@ -69,6 +69,9 @@ const SCHEMA_READ_KEYS: readonly string[] = [
 	"execute_threshold_percentage.default",
 	"execute_threshold_tokens",
 	"fail_closed_blocking",
+	// N-07(b): the core doctrine line — with compaction.enabled false the
+	// fail-closed gate is inert on every harness; DSH honors the same gate.
+	"compaction.enabled",
 	"historian.expand_tools",
 	"historian.maxTokens",
 	"history_budget_percentage",
