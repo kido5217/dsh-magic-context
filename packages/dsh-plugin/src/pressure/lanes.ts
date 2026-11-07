@@ -45,6 +45,7 @@ import type {
 	PreStepInfo,
 } from "../host.js";
 import { cavemanLane } from "../lanes/caveman.js";
+import { noteNudgeLane } from "../lanes/note-nudge.js";
 import { emergencyDropLane } from "../lanes/emergency.js";
 import { runLanePass } from "../lanes/engine.js";
 import { LaneGates, rebuildPermission } from "../lanes/gating.js";
@@ -324,7 +325,7 @@ export class PressureLanes {
 					return percentage !== null ? { percentage } : {};
 				})(),
 			},
-			lanes: [injectionStripLane, temporalLane, supersessionLane, cavemanLane],
+			lanes: [injectionStripLane, temporalLane, supersessionLane, cavemanLane, noteNudgeLane],
 			gates: this.gates,
 		});
 		if (lanePass.changed) changed = true;

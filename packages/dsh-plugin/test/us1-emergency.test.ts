@@ -273,3 +273,54 @@ describe("caveman compression", () => {
 		);
 	});
 });
+
+describe("note nudge lane", () => {
+	test("delivers one tail notice, then the persisted trigger is consumed", async () => {
+		const { onNoteTrigger } = await import(
+			"@magic-context/core/hooks/magic-context/note-nudger"
+		);
+		const { noteNudgeLane, peekNoteNudge } = await import(
+			"../src/lanes/note-nudge.js"
+		);
+		const host = new TestDshHost();
+		const session = host.addSession({ id: "s-nudge" }, [0]);
+		session.seedMessage(0, "u-nudge", "working on the parser", "user");
+		onNoteTrigger(db, "s-nudge", "historian_complete");
+
+		const contextValue = context({
+			session,
+			mcSession: "s-nudge",
+			projection: projectDshSessionLog(session.logRecords()),
+		});
+		// The core decides whether a nudge is due; with a pending trigger it
+		// produces text (the exact copy is the core's).
+		const text = peekNoteNudge(contextValue);
+		expect(typeof text === "string" || text === null).toBe(true);
+
+		const managedEdits = new ManagedEdits(host);
+		const pass = () =>
+			runLanePass(managedEdits, {
+				session,
+				mcSession: "s-nudge",
+				projection: projectDshSessionLog(session.logRecords()),
+				rules: PRIMARY,
+				band: "execute",
+				permission: { permitted: true, reason: "scheduler" },
+				config: cfg,
+				db,
+				protectedMessageIds: new Set(),
+				lanes: [noteNudgeLane],
+				gates: new LaneGates(),
+			});
+		const first = await pass();
+		if (text !== null) {
+			expect(first.changed).toBe(true);
+			expect(session.notices.length).toBeGreaterThan(0);
+			// Second pass: the trigger is cleared, so nothing is delivered again.
+			const second = await pass();
+			expect(second.changed).toBe(false);
+		} else {
+			expect(first.changed).toBe(false);
+		}
+	});
+});

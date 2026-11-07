@@ -33,7 +33,10 @@ import { log } from "@magic-context/core/shared/logger";
 import type { DshSession } from "../host.js";
 import type { McRoleRules } from "../sessions/subagent-rules.js";
 import type { DshLogProjection } from "../surface/dsh-session-log.js";
-import type { McManagedChangeKind } from "../surface/events.js";
+import type {
+	McManagedChangeKind,
+	McReplacementContent,
+} from "../surface/events.js";
 import type { ManagedEdits } from "../surface/managed-edits.js";
 import {
 	type AppliedNodeOp,
@@ -81,6 +84,12 @@ export interface LaneSelection {
 	readonly requests: readonly NodeOpRequest[];
 	/** Store-side decision payload, written BEFORE the surface effect. */
 	readonly decision?: () => Promise<unknown>;
+	/**
+	 * A tail notice to append instead of (or in addition to) node edits.
+	 * Notices are the delivery primitive for assistance lanes: they add a node,
+	 * they never rewrite history.
+	 */
+	readonly tail?: McReplacementContent;
 	/** Optional human-readable reason, recorded in the outcome. */
 	readonly reason?: string;
 }
@@ -193,7 +202,11 @@ async function runLane(
 			error: describe(error),
 		};
 	}
-	if (selection.requests.length === 0 && selection.decision === undefined) {
+	if (
+		selection.requests.length === 0 &&
+		selection.decision === undefined &&
+		selection.tail === undefined
+	) {
 		return {
 			lane: lane.name,
 			ran: true,
@@ -235,7 +248,7 @@ async function runLane(
 				},
 			},
 		);
-		const changed = writes.length > 0;
+		const changed = writes.length > 0 || selection.tail !== undefined;
 		if (changed)
 			log(
 				`[dsh-magic-context] lane ${lane.name} applied ${String(writes.length)} node edit(s)`,
