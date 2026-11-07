@@ -62,7 +62,7 @@ describe("V2 live", () => {
 			const raw = JSON.stringify(body);
 			// The historian's aux call quotes the child transcript, so it must
 			// be answered first or it would look like another child step.
-			if (raw.includes("Magic Context historian")) {
+			if (raw.includes("the hippocampus of a long-running coding agent")) {
 				seen.historian += 1;
 				return {
 					text: "- folded child history: one read of the support file, no findings",

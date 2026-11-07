@@ -262,6 +262,7 @@ export function mountAdapter(
 		managedEdits,
 		head,
 		opts.historianRoute,
+		opts.projectDir ?? process.cwd(),
 	);
 	const dropApplier = new DropApplier(db, managedEdits);
 	const lanes = new PressureLanes({
