@@ -51,6 +51,7 @@ import { LaneGates, rebuildPermission } from "../lanes/gating.js";
 import { dedupLane, injectionStripLane } from "../lanes/heuristics.js";
 import { noteNudgeLane } from "../lanes/note-nudge.js";
 import { supersessionLane } from "../lanes/reclaim.js";
+import { channel2Lease, reduceNudgeLane } from "../lanes/reduce-nudge.js";
 import { temporalLane } from "../lanes/temporal.js";
 import type { Historian } from "../sessions/historian.js";
 import { indexDshSessionHistory } from "../sessions/history-index.js";
@@ -277,7 +278,11 @@ export class PressureLanes {
 		// Below the execute band a new pressure episode begins: routine lanes
 		// re-arm (contract: episode state resets when pressure falls below
 		// execute). Nothing below the band may apply new edits anyway.
-		if (lane === "below-execute") this.gates.resetEpisode(session.id);
+		if (lane === "below-execute") {
+			this.gates.resetEpisode(session.id);
+			// A new pressure episode re-arms the once-per-episode nudges.
+			channel2Lease.reset(state.mcSession);
+		}
 		let changed = false;
 		const autoQueue =
 			lane === "execute" && this.schedulerAllows(session.id, reading);

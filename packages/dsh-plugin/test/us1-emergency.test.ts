@@ -324,3 +324,83 @@ describe("note nudge lane", () => {
 		}
 	});
 });
+
+describe("ctx_reduce channel-2 nudge", () => {
+	function seedSpent(host: TestDshHost, id: string) {
+		const session = host.addSession({ id }, [0, 1, 2]);
+		const tagger = createTagger();
+		// The channel-2 predicate has a 60k-token tail minimum and a 50k reclaimable
+		// floor; this fixture clears both under the core estimator (~6.5 chars/token).
+		const big = "spent output ".repeat(32_000);
+		session.seedMessage(0, "u1", "do the work", "user");
+		session.seedMessage(1, "a1", "", "assistant", {
+			blocks: [
+				{ type: "tool-call", id: "c1", name: "grep", arguments: "{}" },
+			] as never,
+		});
+		session.seedMessage(2, "t1", big, "tool", { toolCallId: "c1" });
+		tagger.assignTag(id, "u1", "message", 11, db);
+		tagger.assignTag(id, "a1", "message", 1, db);
+		tagger.assignToolTag(id, "c1", "a1", big.length, db, 0, "grep", 2);
+		return session;
+	}
+
+	test("fires once per episode when spent tool output dominates the tail", async () => {
+		const { reduceNudgeLane, Channel2Lease, measureChannel2 } = await import(
+			"../src/lanes/reduce-nudge.js"
+		);
+		const host = new TestDshHost();
+		const session = seedSpent(host, "s-nudge2");
+		const laneContext = context({
+			session,
+			mcSession: "s-nudge2",
+			projection: projectDshSessionLog(session.logRecords()),
+		});
+		const measurement = measureChannel2(laneContext);
+		expect(measurement.shouldTrigger).toBe(true);
+
+		const managedEdits = new ManagedEdits(host);
+		const lease = new Channel2Lease();
+		const pass = () =>
+			runLanePass(managedEdits, {
+				session,
+				mcSession: "s-nudge2",
+				projection: projectDshSessionLog(session.logRecords()),
+				rules: PRIMARY,
+				band: "execute",
+				permission: { permitted: true, reason: "scheduler" },
+				config: cfg,
+				db,
+				protectedMessageIds: new Set(),
+				lanes: [reduceNudgeLane],
+				gates: new LaneGates(),
+			});
+		void lease;
+		const first = await pass();
+		expect(first.changed).toBe(true);
+		const notice = session.notices.at(-1)!;
+		expect(JSON.stringify(notice.content)).toContain("ctx_reduce");
+		// A second pass delivers nothing new.
+		await pass();
+		expect(session.notices).toHaveLength(1);
+	});
+
+	test("does not fire when reclaimable output is below the floor", async () => {
+		const { measureChannel2 } = await import("../src/lanes/reduce-nudge.js");
+		const host = new TestDshHost();
+		const session = host.addSession({ id: "s-nudge3" }, [0, 1]);
+		const tagger = createTagger();
+		session.seedMessage(0, "u1", "small task", "user");
+		session.seedMessage(1, "t1", "tiny", "tool", { toolCallId: "c1" });
+		tagger.assignTag("s-nudge3", "u1", "message", 10, db);
+		tagger.assignToolTag("s-nudge3", "c1", "u1", 4, db, 0, "grep", 2);
+		const measurement = measureChannel2(
+			context({
+				session,
+				mcSession: "s-nudge3",
+				projection: projectDshSessionLog(session.logRecords()),
+			}),
+		);
+		expect(measurement.shouldTrigger).toBe(false);
+	});
+});

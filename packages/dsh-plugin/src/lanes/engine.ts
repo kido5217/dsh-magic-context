@@ -238,6 +238,11 @@ async function runLane(
 						: { changeId },
 				effect: async () => {
 					writes = await applyNodeOps(request.session, plan);
+					// Assistance lanes ADD context: a tail notice is their delivery
+					// primitive, and it rides the same per-lane bracket.
+					if (selection.tail !== undefined) {
+						await request.session.appendTail(selection.tail);
+					}
 					const shadowedSeqs = writes.map((op) => op.seq);
 					return {
 						...(writes.length === 1
