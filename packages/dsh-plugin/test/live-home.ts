@@ -82,6 +82,8 @@ export interface LiveHome {
 			sessionId?: string;
 			args?: readonly string[];
 			env?: Record<string, string>;
+			/** Child working directory: the project identity Magic Context resolves. */
+			cwd?: string;
 		},
 	): LiveTurnResult;
 	/**
@@ -95,6 +97,8 @@ export interface LiveHome {
 			sessionId?: string;
 			args?: readonly string[];
 			env?: Record<string, string>;
+			/** Child working directory: the project identity Magic Context resolves. */
+			cwd?: string;
 		},
 	): Promise<LiveTurnResult>;
 	dispose(): void;
@@ -356,6 +360,7 @@ export function createLiveHome(options: LiveHomeOptions = {}): LiveHome {
 			const result = spawnSync(DSH_BIN, turnArgs(profile, prompt, runOptions), {
 				env: dshEnv(home, runOptions.env),
 				encoding: "utf8",
+				cwd: runOptions.cwd,
 				timeout: Number(process.env.MC_DSH_TURN_TIMEOUT_MS ?? 300_000),
 			});
 			return toTurnResult(
@@ -368,6 +373,7 @@ export function createLiveHome(options: LiveHomeOptions = {}): LiveHome {
 		async runHeadlessAsync(prompt, runOptions = {}) {
 			const child = spawn(DSH_BIN, turnArgs(profile, prompt, runOptions), {
 				env: dshEnv(home, runOptions.env),
+				cwd: runOptions.cwd,
 			});
 			let stdout = "";
 			let stderr = "";

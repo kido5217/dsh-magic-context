@@ -61,8 +61,17 @@ export function resolveBaselineMural(
 	memoryBudgetTokens: number = DEFAULT_MEMORY_BUDGET_TOKENS,
 	mcSession?: string,
 ): BaselineMural | undefined {
-	if (config.mural?.enabled !== true || !imageInput || !projectIdentity) {
+	if (config.mural?.enabled !== true || !projectIdentity) {
 		return undefined;
+	}
+	if (!imageInput) {
+		// A text-only route is a durable route fact, not a silent no-op
+		// (quickstart V4): record it, and tell the core the mural is on but
+		// this render carries no vision surface.
+		if (mcSession !== undefined) {
+			sessionLog(mcSession, "mural skipped: routed model lacks image input");
+		}
+		return { options: { enabled: true, supportsVision: false } };
 	}
 	const result = ensureMuralRendered(
 		db,

@@ -218,6 +218,10 @@ export function startMockProvider(): MockProvider {
 				unknown
 			>;
 			requests.push({ path: url.pathname, body });
+			// The host's title generator shares the route; it must never eat a
+			// scripted agent reply.
+			if (JSON.stringify(body["messages"] ?? "").includes("concise title"))
+				return respondWith({ text: "Mock session" }, body);
 			const reply = responder
 				? responder(body)
 				: (replies[Math.min(cursor, replies.length - 1)] ?? {
