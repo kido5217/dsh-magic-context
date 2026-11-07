@@ -112,6 +112,13 @@ describe("V1 live", () => {
 		// With a reclaimable tool result in the tail, the canonical placeholder is
 		// what replaces it (a fold would have published a compartment instead).
 		expect(replaced).toBe(true);
+		// T005's live half: a TOOL RESULT rewritten in place reaches the next
+		// request as a tool message carrying the placeholder — the call identity
+		// survived (the message is still `tool`, not a user notice).
+		const toolWithPlaceholder = (withHistory!.body["messages"] as { role?: string; content?: unknown }[]).some(
+			(message) => message.role === "tool" && JSON.stringify(message.content ?? "").includes("[dropped §"),
+		);
+		expect(toolWithPlaceholder).toBe(true);
 		expect(compartments.n).toBe(0);
 	}, 300_000);
 });
