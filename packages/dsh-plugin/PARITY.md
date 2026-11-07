@@ -117,7 +117,9 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
     caller is blocked on the answer; refusing would deadlock the delegation. On the other
     harnesses the child's request is rewritten in place, so this situation does not
     arise. Evidence: `src/pressure/lanes.ts` (refuse band, subagent branch),
-    `src/lanes/emergency.ts`, `test/us1-emergency.test.ts`.
+    `src/lanes/emergency.ts`, `test/us1-emergency.test.ts`, and the live proof
+    `test/live-v2.test.ts` (a real `dsh` child at the wall folds: a compartment on the
+    `is_subagent=1` session and a request-only historian call observed on the wire).
 
 17. **DSH-imposed — reductions are per-node edits, never a span.** A queued drop edits
     each target node on its own: a tool result is rewritten in place (content only,

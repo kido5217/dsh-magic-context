@@ -38,6 +38,12 @@ export interface MockReply {
 	readonly failStatus?: number;
 	/** Provider-reported prompt tokens, so a live gate can drive real pressure. */
 	readonly promptTokens?: number;
+	/**
+	 * Stall this reply (the response headers are withheld) for N ms. Used to
+	 * keep a turn open while a background agent — e.g. an async `subagent`
+	 * child — takes its own steps inside the same host process.
+	 */
+	readonly delayMs?: number;
 }
 
 export interface MockRequest {
@@ -80,6 +86,121 @@ function sseChunk(
 	return `data: ${JSON.stringify(payload)}\n\n`;
 }
 
+/** Turn one scripted reply into the HTTP response the client expects. */
+function respondWith(reply: MockReply, body: Record<string, unknown>): Response {
+	if (reply.failStatus !== undefined) {
+		return new Response(
+			JSON.stringify({
+				error: { message: "mock provider failure", type: "mock" },
+			}),
+			{
+				status: reply.failStatus,
+				headers: { "content-type": "application/json" },
+			},
+		);
+	}
+	const stream = body["stream"] !== false;
+	const toolCalls = reply.toolCalls ?? [];
+	const finishReason =
+		reply.finishReason ?? (toolCalls.length > 0 ? "tool_calls" : "stop");
+	if (!stream) {
+		return new Response(
+			JSON.stringify({
+				id: `chatcmpl-${randomUUID()}`,
+				object: "chat.completion",
+				created: Math.floor(Date.now() / 1000),
+				model: "mock-model",
+				choices: [
+					{
+						index: 0,
+						message: {
+							role: "assistant",
+							content: reply.text ?? "",
+							...(toolCalls.length > 0
+								? {
+										tool_calls: toolCalls.map((call) => ({
+											id: `call_${randomUUID().replaceAll("-", "").slice(0, 12)}`,
+											type: "function",
+											function: {
+												name: call.name,
+												arguments: call.arguments,
+											},
+										})),
+									}
+								: {}),
+						},
+						finish_reason: finishReason,
+					},
+				],
+			}),
+			{ headers: { "content-type": "application/json" } },
+		);
+	}
+	const parts: string[] = [];
+	parts.push(
+		sseChunk({
+			index: 0,
+			delta: { role: "assistant", content: "" },
+			finish_reason: null,
+		}),
+	);
+	if (reply.thinking !== undefined && reply.thinking.length > 0) {
+		parts.push(
+			sseChunk({
+				index: 0,
+				delta: { reasoning_content: reply.thinking },
+				finish_reason: null,
+			}),
+		);
+	}
+	if (reply.text !== undefined && reply.text.length > 0) {
+		parts.push(
+			sseChunk({
+				index: 0,
+				delta: { content: reply.text },
+				finish_reason: null,
+			}),
+		);
+	}
+	toolCalls.forEach((call, index) => {
+		parts.push(
+			sseChunk({
+				index: 0,
+				delta: {
+					tool_calls: [
+						{
+							index,
+							id: `call_${randomUUID().replaceAll("-", "").slice(0, 12)}`,
+							type: "function",
+							function: { name: call.name, arguments: call.arguments },
+						},
+					],
+				},
+				finish_reason: null,
+			}),
+		);
+	});
+	const promptTokens = reply.promptTokens ?? 100;
+	parts.push(
+		sseChunk(
+			{ index: 0, delta: {}, finish_reason: finishReason },
+			{
+				prompt_tokens: promptTokens,
+				completion_tokens: 10,
+				total_tokens: promptTokens + 10,
+			},
+		),
+	);
+	parts.push("data: [DONE]\n\n");
+	return new Response(parts.join(""), {
+		headers: {
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache",
+			connection: "keep-alive",
+		},
+	});
+}
+
 /** Start the mock provider on an ephemeral port. */
 export function startMockProvider(): MockProvider {
 	let replies: MockReply[] = [{ text: "ok" }];
@@ -97,121 +218,16 @@ export function startMockProvider(): MockProvider {
 				unknown
 			>;
 			requests.push({ path: url.pathname, body });
-			const reply = replies[Math.min(cursor, replies.length - 1)] ?? {
-				text: "ok",
-			};
+			const reply = responder
+				? responder(body)
+				: (replies[Math.min(cursor, replies.length - 1)] ?? {
+						text: "ok",
+					});
 			cursor += 1;
-			if (reply.failStatus !== undefined) {
-				return new Response(
-					JSON.stringify({
-						error: { message: "mock provider failure", type: "mock" },
-					}),
-					{
-						status: reply.failStatus,
-						headers: { "content-type": "application/json" },
-					},
-				);
+			if (reply.delayMs !== undefined && reply.delayMs > 0) {
+				await new Promise((done) => setTimeout(done, reply.delayMs));
 			}
-			const stream = body["stream"] !== false;
-			const toolCalls = reply.toolCalls ?? [];
-			const finishReason =
-				reply.finishReason ?? (toolCalls.length > 0 ? "tool_calls" : "stop");
-			if (!stream) {
-				return new Response(
-					JSON.stringify({
-						id: `chatcmpl-${randomUUID()}`,
-						object: "chat.completion",
-						created: Math.floor(Date.now() / 1000),
-						model: "mock-model",
-						choices: [
-							{
-								index: 0,
-								message: {
-									role: "assistant",
-									content: reply.text ?? "",
-									...(toolCalls.length > 0
-										? {
-												tool_calls: toolCalls.map((call) => ({
-													id: `call_${randomUUID().replaceAll("-", "").slice(0, 12)}`,
-													type: "function",
-													function: {
-														name: call.name,
-														arguments: call.arguments,
-													},
-												})),
-											}
-										: {}),
-								},
-								finish_reason: finishReason,
-							},
-						],
-					}),
-					{ headers: { "content-type": "application/json" } },
-				);
-			}
-			const parts: string[] = [];
-			parts.push(
-				sseChunk({
-					index: 0,
-					delta: { role: "assistant", content: "" },
-					finish_reason: null,
-				}),
-			);
-			if (reply.thinking !== undefined && reply.thinking.length > 0) {
-				parts.push(
-					sseChunk({
-						index: 0,
-						delta: { reasoning_content: reply.thinking },
-						finish_reason: null,
-					}),
-				);
-			}
-			if (reply.text !== undefined && reply.text.length > 0) {
-				parts.push(
-					sseChunk({
-						index: 0,
-						delta: { content: reply.text },
-						finish_reason: null,
-					}),
-				);
-			}
-			toolCalls.forEach((call, index) => {
-				parts.push(
-					sseChunk({
-						index: 0,
-						delta: {
-							tool_calls: [
-								{
-									index,
-									id: `call_${randomUUID().replaceAll("-", "").slice(0, 12)}`,
-									type: "function",
-									function: { name: call.name, arguments: call.arguments },
-								},
-							],
-						},
-						finish_reason: null,
-					}),
-				);
-			});
-			const promptTokens = reply.promptTokens ?? 100;
-			parts.push(
-				sseChunk(
-					{ index: 0, delta: {}, finish_reason: finishReason },
-					{
-						prompt_tokens: promptTokens,
-						completion_tokens: 10,
-						total_tokens: promptTokens + 10,
-					},
-				),
-			);
-			parts.push("data: [DONE]\n\n");
-			return new Response(parts.join(""), {
-				headers: {
-					"content-type": "text/event-stream",
-					"cache-control": "no-cache",
-					connection: "keep-alive",
-				},
-			});
+			return respondWith(reply, body);
 		},
 	});
 
