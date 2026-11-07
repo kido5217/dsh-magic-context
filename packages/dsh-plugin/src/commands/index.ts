@@ -152,7 +152,7 @@ export function registerCommands(deps: CommandDeps): () => void {
 				text: deps.lanes.requestEmbedBackfill(session),
 			};
 		},
-		{ hint: "[messages to keep, default 10]" },
+		{ hint: "start | status" },
 	);
 
 	add(
@@ -181,35 +181,6 @@ export function registerCommands(deps: CommandDeps): () => void {
 			return { kind: "success", text: `## Magic Wrapup\n\n${text}` };
 		},
 		{ hint: "[messages to keep, default 10]" },
-	);
-
-	add(
-		"ctx-dream",
-		"Run maintenance tasks now. Optional argument: one task name.",
-		async (invocation) => {
-			const maintenance = deps.maintenance();
-			if (maintenance === undefined) {
-				return {
-					kind: "error",
-					text: "Maintenance is not running for this project (no dreamer model configured — see dreamer.pi / dreamer.dsh).",
-				};
-			}
-			const argument = invocation.rawInput.trim();
-			if (argument !== "") {
-				const known = argument.split(",")[0]?.trim() ?? "";
-				const result = await maintenance.runManual(known as DreamTaskName);
-				return {
-					kind:
-						result.ran.length > 0 || (result.failed?.length ?? 0) === 0
-							? "success"
-							: "error",
-					text: formatManualResult(result),
-				};
-			}
-			const result = await maintenance.runManual();
-			return { kind: "success", text: formatManualResult(result) };
-		},
-		{ hint: "[task name]" },
 	);
 
 	add(
