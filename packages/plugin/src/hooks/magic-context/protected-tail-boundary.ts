@@ -65,7 +65,7 @@ export interface ResolvedBoundaryContext {
     emergencyTailScale?: 0.5 | 0.25;
     /** One admitted trigger evaluation may cross the live prompt without changing any other fence. */
     liftLivePromptFloor?: boolean;
-    providerShapeVersion: "opencode-v1" | "pi-folded-v1";
+    providerShapeVersion: "opencode-v1" | "pi-folded-v1" | "dsh-v1";
     cacheNamespace: string;
     createdAt?: number;
     /**
@@ -115,7 +115,7 @@ export interface ProtectedTailBoundarySnapshot {
      * snapshot may use it; nothing else should copy it.
      */
     liftLivePromptFloor?: boolean;
-    providerShapeVersion: "opencode-v1" | "pi-folded-v1";
+    providerShapeVersion: "opencode-v1" | "pi-folded-v1" | "dsh-v1";
     cacheNamespace: string;
     createdAt: number;
     rawRangeFingerprint: string;
@@ -872,7 +872,7 @@ export function resolveBoundaryContext(args: {
     usage?: BoundaryUsage | null;
     usageSource?: ResolvedBoundaryContext["usageSource"];
     emergencyTailScale?: 0.5 | 0.25;
-    providerShapeVersion?: "opencode-v1" | "pi-folded-v1";
+    providerShapeVersion?: "opencode-v1" | "pi-folded-v1" | "dsh-v1";
     liftLivePromptFloor?: boolean;
     cacheNamespace?: string;
     /**

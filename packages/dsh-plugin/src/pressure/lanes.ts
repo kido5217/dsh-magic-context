@@ -64,6 +64,7 @@ import {
 	protectedTailBudget,
 	splitProtectedTail,
 } from "../surface/apply-operations.js";
+import { resolveDshBoundary } from "../surface/boundary.js";
 import {
 	type DshLogProjection,
 	type DshSessionLogReader,
@@ -176,6 +177,45 @@ export class PressureLanes {
 		return this.deps.readSessionLog(dshSessionId) ?? [];
 	}
 
+	/**
+	 * Durable ids of the verbatim protected tail (T029).
+	 *
+	 * The core boundary is authoritative when it resolves: it fences tool-call
+	 * arcs and honours the compartment anchor, which a pure token budget cannot.
+	 * The budget stays as the fallback for the cases the resolver cannot price
+	 * (no window, no raw provider, a store hiccup) — never as the primary rule.
+	 */
+	private protectedMessageIds(
+		mcSession: string,
+		session: DshSession,
+		projection: DshLogProjection,
+		reading: { pressureTokens?: number; contextWindow?: number } | undefined,
+		budget: number,
+		emergency: boolean,
+	): ReadonlySet<string> {
+		const boundary = resolveDshBoundary({
+			db: this.deps.db,
+			config: this.deps.config,
+			mcSession,
+			projection,
+			contextWindow: reading?.contextWindow,
+			percentage: (() => {
+				const value = this.deps.meter.read(session.id).percentage;
+				return value === null ? undefined : value;
+			})(),
+			pressureTokens: reading?.pressureTokens,
+			emergency,
+		});
+		if (boundary !== undefined) return boundary.protectedMessageIds;
+		const tail = splitProtectedTail(
+			projection.records.filter(
+				(record) => !isAdapterSurfaceId(record.messageId),
+			),
+			budget,
+		).protectedTail;
+		return new Set(tail.map((record) => record.messageId));
+	}
+
 	private async runPass(
 		session: DshSession,
 		state: AttachedSession,
@@ -242,13 +282,13 @@ export class PressureLanes {
 					permission: rebuildPermission({ schedulerAllows: false, band: lane }),
 					config: this.deps.config,
 					db: this.deps.db,
-					protectedMessageIds: new Set(
-						splitProtectedTail(
-							projection.records.filter(
-								(record) => !isAdapterSurfaceId(record.messageId),
-							),
-							budget,
-						).protectedTail.map((record) => record.messageId),
+					protectedMessageIds: this.protectedMessageIds(
+						state.mcSession,
+						session,
+						projection,
+						reading,
+						budget,
+						true,
 					),
 					lanes: [emergencyDropLane, supersessionLane],
 					gates: this.gates,
