@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url";
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 const SPAWN_SYNC_TESTS = new Set([
+    "src/adapters/dsh.test.ts",
+    "src/commands/doctor-dsh.test.ts",
     "src/commands/doctor-repair-db.test.ts",
+    "src/commands/setup-dsh.test.ts",
     "src/lib/omp-helpers.test.ts",
     "src/lib/opencode-helpers.test.ts",
     "src/lib/pi-helpers.test.ts",
