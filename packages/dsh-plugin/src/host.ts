@@ -173,6 +173,16 @@ export interface PressureReading {
 	readonly contextWindow?: number;
 }
 
+/** One failed model request, as the host normalized it (T028). */
+export interface RequestErrorInfo {
+	readonly sessionId: string;
+	readonly turn: number;
+	readonly step: number;
+	readonly provider: string;
+	/** The provider's failure payload; `detectOverflow` reads its message. */
+	readonly failure: unknown;
+}
+
 /** One dispatched tool result, before it reaches the model (T008). */
 export interface PostToolInfo {
 	readonly sessionId: string;
@@ -207,6 +217,14 @@ export interface DshHost {
 	/** Observe proposed agent steps; return "reject" to refuse the step (no model call). */
 	onPreStep(
 		listener: (info: PreStepInfo) => PreStepDecision | Promise<PreStepDecision>,
+	): () => void;
+	/**
+	 * Observe a failed model request. Returning true asks the host to RETRY the
+	 * request (the waterfall's `retry` action); returning false/undefined lets
+	 * the failure stand. Used by overflow recovery (T028).
+	 */
+	onRequestError(
+		listener: (info: RequestErrorInfo) => boolean | Promise<boolean>,
 	): () => void;
 	/** Observe dispatched tool results; a verdict may rewrite or accompany them. */
 	onPostToolExecute(

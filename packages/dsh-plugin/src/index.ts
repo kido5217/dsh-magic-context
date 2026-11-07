@@ -40,12 +40,23 @@ import {
 	createCordisHost,
 	createCordisSessionLogSource,
 } from "./host-cordis.js";
+import {
+	detectOverflowError,
+	OverflowLedger,
+	OverflowRecoveryGate,
+	recoverOverflow,
+} from "./lanes/overflow.js";
 import { PressureLanes } from "./pressure/lanes.js";
 import { PressureMeter } from "./pressure/meter.js";
 import { Historian, type HistorianRoute } from "./sessions/historian.js";
 import { SessionMapping } from "./sessions/mapping.js";
-import { DropApplier } from "./surface/apply-operations.js";
+import { rulesForRole } from "./sessions/subagent-rules.js";
+import {
+	DropApplier,
+	protectedTailBudget,
+} from "./surface/apply-operations.js";
 import type { DshSessionLogReader } from "./surface/dsh-session-log.js";
+import { projectDshSessionLog } from "./surface/dsh-session-log.js";
 import { HeadManager } from "./surface/head.js";
 import { ManagedEdits } from "./surface/managed-edits.js";
 import { registerMagicContextToolsDsh } from "./tools/index.js";
@@ -123,6 +134,47 @@ export function mountAdapter(
 	const mapping = new SessionMapping(db);
 	registerEffect("session-mapping", () => () => mapping.detachAll());
 
+	// T028 — overflow recovery: learn the route's real window, fold, retry once.
+	const overflowLedger = new OverflowLedger();
+	const overflowGate = new OverflowRecoveryGate();
+	registerEffect("overflow-recovery", () =>
+		host.onRequestError(async (info) => {
+			const detection = detectOverflowError(info.failure);
+			if (!detection.isOverflow) return false;
+			const session = host.getSession(info.sessionId);
+			if (session === undefined) return false;
+			const mapped = mapping.upsert(session.header);
+			return await recoverOverflow({
+				sessionId: info.sessionId,
+				detection,
+				ledger: overflowLedger,
+				gate: overflowGate,
+				...(host.pressure(info.sessionId)?.contextWindow !== undefined
+					? { advertisedWindow: host.pressure(info.sessionId)?.contextWindow }
+					: {}),
+				fold: () =>
+					historian.fold({
+						session,
+						mcSession: mapped.mcSession,
+						projection: projectDshSessionLog(
+							opts.readSessionLog?.(info.sessionId) ?? [],
+						),
+						rules: rulesForRole(mapped.role),
+						subagent: mapped.role === "subagent",
+						protectedTailTokens: protectedTailBudget(
+							config,
+							host.pressure(info.sessionId)?.contextWindow,
+							false,
+						),
+					}),
+			});
+		}),
+	);
+	registerEffect("overflow-ledger", () => () => {
+		overflowLedger.detachAll();
+		overflowGate.detachAll();
+	});
+
 	// T004/T016 — the assistant-body projection (owner of the plugin event type).
 	// Registered before any session is read so live and restored sessions both
 	// derive the rewrite; disposing the fiber drops the interpreter, and a log
@@ -171,6 +223,7 @@ export function mountAdapter(
 		db,
 		config,
 		mapping,
+		overflowWindows: overflowLedger,
 		claim: compaction,
 		meter,
 		head,

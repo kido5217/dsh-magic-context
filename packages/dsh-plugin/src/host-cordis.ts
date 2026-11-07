@@ -55,6 +55,7 @@ import type {
 	PreStepDecision,
 	PreStepInfo,
 	PressureReading,
+	RequestErrorInfo,
 } from "./host.js";
 import type { HistorianRoute } from "./sessions/historian.js";
 import type { DshLogMessageRecord } from "./surface/dsh-session-log.js";
@@ -440,6 +441,23 @@ export function createCordisHost(
 						step: payload.step,
 					});
 					return decision === "reject" ? { kind: "reject" } : next();
+				})(),
+			);
+		},
+		onRequestError(
+			listener: (info: RequestErrorInfo) => boolean | Promise<boolean>,
+		): () => void {
+			return ctx.on("agent/request-error", (payload, next) =>
+				(async () => {
+					const handled = await listener({
+						sessionId: payload.agent.session.id,
+						turn: payload.turn,
+						step: payload.step,
+						provider: payload.provider,
+						failure: payload.failure,
+					});
+					if (handled) return { kind: "retry" } as const;
+					return next();
 				})(),
 			);
 		},

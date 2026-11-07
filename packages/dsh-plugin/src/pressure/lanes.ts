@@ -92,6 +92,13 @@ export interface PressureLanesDeps {
 	readonly historian: Historian;
 	readonly dropApplier: DropApplier;
 	readonly managedEdits: ManagedEdits;
+	/** Learned route windows from overflow recovery (T028); optional in tests. */
+	readonly overflowWindows?: {
+		effectiveWindow(
+			sessionId: string,
+			advertised: number | undefined,
+		): number | undefined;
+	};
 	readonly readSessionLog: DshSessionLogReader;
 }
 
@@ -172,7 +179,22 @@ export class PressureLanes {
 		info: PreStepInfo,
 	): Promise<PreStepDecision> {
 		const lane = this.deps.meter.lane(session.id); // fresh EVERY pass
-		const reading = this.deps.host.pressure(session.id);
+		const measured = this.deps.host.pressure(session.id);
+		// A route that already rejected one request is priced against what it
+		// actually accepts, not what it advertises (T028).
+		const learnedWindow = this.deps.overflowWindows?.effectiveWindow(
+			session.id,
+			measured?.contextWindow,
+		);
+		const reading =
+			measured === undefined
+				? undefined
+				: {
+						...measured,
+						...(learnedWindow !== undefined
+							? { contextWindow: learnedWindow }
+							: {}),
+					};
 		const projection = projectDshSessionLog(this.readRecords(session.id));
 		this.tagProjectedMessages(state.mcSession, projection);
 		indexDshSessionHistory(this.deps.db, state.mcSession, projection);

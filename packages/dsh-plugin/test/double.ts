@@ -22,6 +22,7 @@ import type {
 	PressureReading,
 	PreStepDecision,
 	PreStepInfo,
+	RequestErrorInfo,
 } from "../src/host.js";
 import type { McReplacementContent } from "../src/surface/events.js";
 import type { DshLogMessageRecord } from "../src/surface/dsh-session-log.js";
@@ -255,6 +256,10 @@ export class TestDshHost implements DshHost {
 	}
 
 	readonly postToolListeners = new Set<(info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>>();
+
+	onRequestError(_listener: (info: RequestErrorInfo) => boolean | Promise<boolean>): () => void {
+		return () => {};
+	}
 
 	registerRewriteProjection(): () => void {
 		return () => {};

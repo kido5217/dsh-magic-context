@@ -23,6 +23,7 @@ import type {
 	PressureReading,
 	PreStepDecision,
 	PreStepInfo,
+	RequestErrorInfo,
 } from "../src/host.js";
 import type { McReplacementContent } from "../src/surface/events.js";
 
@@ -175,6 +176,10 @@ export class McHost implements DshHost {
 	}
 
 	onPostToolExecute(_listener: (info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>): () => void {
+		return () => {};
+	}
+
+	onRequestError(_listener: (info: RequestErrorInfo) => boolean | Promise<boolean>): () => void {
 		return () => {};
 	}
 
