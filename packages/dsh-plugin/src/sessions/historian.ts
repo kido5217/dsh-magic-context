@@ -171,7 +171,13 @@ export class Historian {
 		// the fold once coverage passes them (the store holds their truth).
 		let candidates = projection.records.filter(
 			(record) =>
-				record.seq > coveredThrough && !isAdapterSurfaceId(record.messageId),
+				record.seq > coveredThrough &&
+				// N-03(b): the host's role=system node is never a fold candidate
+				// — core never summarizes the system prompt, and node 0 survives
+				// verbatim anyway, so folding it only duplicates content and
+				// wastes historian tokens.
+				record.role !== "system" &&
+				!isAdapterSurfaceId(record.messageId),
 		);
 		if (request.span !== undefined) {
 			// The span names surface POSITIONS, not a numeric seq interval
@@ -190,14 +196,28 @@ export class Historian {
 			);
 			candidates = candidates.filter((record) => inside.has(record.seq));
 		}
-		const adapterSeqs = projection.records
-			.filter((record) => isAdapterSurfaceId(record.messageId))
-			.map((record) => record.seq);
 		const { eligible } = splitProtectedTail(
 			candidates,
 			request.protectedTailTokens,
 		);
 		if (eligible.length === 0) return null;
+		// N-03(a): adapter nodes are subsumed by the fold only INSIDE the
+		// conversation span. An adapter node appended after the protected tail
+		// (e.g. a refusal notice) must not extend coverage past the tail —
+		// that would shadow the newest verbatim messages without ever having
+		// summarized them.
+		const eligibleSeqs = new Set(eligible.map((record) => record.seq));
+		let lastEligiblePosition = -1;
+		projection.records.forEach((record, index) => {
+			if (eligibleSeqs.has(record.seq)) lastEligiblePosition = index;
+		});
+		const adapterSeqs = projection.records
+			.filter(
+				(record, index) =>
+					isAdapterSurfaceId(record.messageId) &&
+					index <= lastEligiblePosition,
+			)
+			.map((record) => record.seq);
 		if (this.route === undefined) {
 			if (!this.loggedMissingRoute) {
 				this.loggedMissingRoute = true;
