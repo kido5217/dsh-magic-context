@@ -149,6 +149,35 @@ export class DropApplier {
 	) {}
 
 	/**
+	 * N-04: tag numbers the store already decided to drop whose SURFACE node
+	 * still serves the full bytes (no `[dropped §N§]` placeholder anywhere).
+	 * These are decided-but-unmaterialized drops: the durable status is the
+	 * source of truth, so every pass re-derives them from the tags table,
+	 * not from the queue the decision drained.
+	 */
+	private droppedButUnmaterialized(
+		mcSession: string,
+		projection: DropPassRequest["projection"],
+	): number[] {
+		const rows = this.db
+			.prepare(
+				"SELECT tag_number, message_id FROM tags WHERE session_id = ? AND type = 'message' AND status = 'dropped'",
+			)
+			.all(mcSession) as Array<{ tag_number: number; message_id: string }>;
+		const numbers: number[] = [];
+		for (const row of rows) {
+			const record = projection.records.find(
+				(candidate) => candidate.messageId === row.message_id,
+			);
+			if (record === undefined) continue;
+			if ((record.text ?? "").includes(buildReplacementContent(row.tag_number)))
+				continue;
+			numbers.push(row.tag_number);
+		}
+		return numbers;
+	}
+
+	/**
 	 * Apply the session's queued drops as ONE managed change (one bracket), with
 	 * one per-node edit per dropped message (T017).
 	 *
@@ -217,8 +246,18 @@ export class DropApplier {
 				for (const tagNumber of queueable)
 					queuePendingOp(this.db, mcSession, tagNumber, "drop");
 				applyPendingOperations(mcSession, this.db, new Map(), new Set());
+				// N-04: the materialization targets are the session's WHOLE set
+				// of settled (dropped/compacted) tags, not just this pass's
+				// `candidates`. The decision flips status and drains the queue;
+				// a crash before the surface rewrite leaves a tag `dropped` but
+				// un-materialized, and on the next pass it is neither in the
+				// (drained) queue nor among the active tags — so a queue-derived
+				// candidate set would never retry it. Query the durable status
+				// directly; the materialized check below keeps the rewrite
+				// idempotent, so a re-covered tag is a no-op, not a double write.
 				const settled = getTagsByNumbers(this.db, mcSession, [
 					...candidates,
+					...this.droppedButUnmaterialized(mcSession, projection),
 				]).filter(
 					(tag) => tag.status === "dropped" || tag.status === "compacted",
 				);
@@ -230,6 +269,11 @@ export class DropApplier {
 						(candidate) => candidate.messageId === tag.messageId,
 					);
 					if (record === undefined) continue;
+					// Already materialized: the placeholder is in the served
+					// bytes. Re-writing the same bytes every pass would be a
+					// no-op at best; skip so a settled drop costs nothing.
+					if ((record.text ?? "").includes(buildReplacementContent(tag.tagNumber)))
+						continue;
 					targets.push({ tagNumber: tag.tagNumber, record });
 				}
 				return { changeId, targets };
