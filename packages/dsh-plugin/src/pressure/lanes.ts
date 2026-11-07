@@ -48,6 +48,7 @@ import { runLanePass } from "../lanes/engine.js";
 import { LaneGates, rebuildPermission } from "../lanes/gating.js";
 import { injectionStripLane } from "../lanes/heuristics.js";
 import { supersessionLane } from "../lanes/reclaim.js";
+import { temporalLane } from "../lanes/temporal.js";
 import type { Historian } from "../sessions/historian.js";
 import { indexDshSessionHistory } from "../sessions/history-index.js";
 import type { SessionMapping } from "../sessions/mapping.js";
@@ -255,7 +256,7 @@ export class PressureLanes {
 					budget,
 				).protectedTail.map((record) => record.messageId),
 			),
-			lanes: [injectionStripLane, supersessionLane],
+			lanes: [injectionStripLane, temporalLane, supersessionLane],
 			gates: this.gates,
 		});
 		if (lanePass.changed) changed = true;

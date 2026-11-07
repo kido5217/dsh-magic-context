@@ -13,12 +13,24 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
-import { LaneGates, rebuildPermission, type LaneGateRequest } from "../src/lanes/gating.js";
-import { runLanePass, type Lane } from "../src/lanes/engine.js";
-import { injectionStripLane, selectInjectionStrips } from "../src/lanes/heuristics.js";
+import { type Lane, runLanePass } from "../src/lanes/engine.js";
+import {
+	type LaneGateRequest,
+	LaneGates,
+	rebuildPermission,
+} from "../src/lanes/gating.js";
+import {
+	injectionStripLane,
+	selectInjectionStrips,
+} from "../src/lanes/heuristics.js";
+import { selectTemporalMarkers } from "../src/lanes/temporal.js";
 import { rulesForRole } from "../src/sessions/subagent-rules.js";
 import { projectDshSessionLog } from "../src/surface/dsh-session-log.js";
 import { ManagedEdits } from "../src/surface/managed-edits.js";
@@ -28,7 +40,10 @@ let db: ContextDatabase;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 });
 
 afterAll(async () => {
@@ -38,7 +53,8 @@ afterAll(async () => {
 const cfg = MagicContextConfigSchema.parse({});
 const PRIMARY = rulesForRole("primary");
 const SUBAGENT = rulesForRole("subagent");
-const INJECTED = "real question\n<system-reminder>stale harness note</system-reminder>\nmore text";
+const INJECTED =
+	"real question\n<system-reminder>stale harness note</system-reminder>\nmore text";
 
 function gate(overrides: Partial<LaneGateRequest> = {}): LaneGateRequest {
 	return {
@@ -54,15 +70,32 @@ function gate(overrides: Partial<LaneGateRequest> = {}): LaneGateRequest {
 
 describe("rebuild permission", () => {
 	test("any of scheduler, force, refuse, or a landed change grants it", () => {
-		expect(rebuildPermission({ schedulerAllows: true, band: "below-execute" })).toEqual({ permitted: true, reason: "scheduler" });
-		expect(rebuildPermission({ schedulerAllows: false, band: "force" })).toEqual({ permitted: true, reason: "force-band" });
-		expect(rebuildPermission({ schedulerAllows: false, band: "refuse" })).toEqual({ permitted: true, reason: "refuse-wall" });
-		expect(rebuildPermission({ schedulerAllows: false, band: "execute", managedChangeLanded: true })).toEqual({ permitted: true, reason: "managed-change" });
+		expect(
+			rebuildPermission({ schedulerAllows: true, band: "below-execute" }),
+		).toEqual({ permitted: true, reason: "scheduler" });
+		expect(
+			rebuildPermission({ schedulerAllows: false, band: "force" }),
+		).toEqual({ permitted: true, reason: "force-band" });
+		expect(
+			rebuildPermission({ schedulerAllows: false, band: "refuse" }),
+		).toEqual({ permitted: true, reason: "refuse-wall" });
+		expect(
+			rebuildPermission({
+				schedulerAllows: false,
+				band: "execute",
+				managedChangeLanded: true,
+			}),
+		).toEqual({ permitted: true, reason: "managed-change" });
 	});
 
 	test("below the band with nothing landed, no lane may apply", () => {
-		expect(rebuildPermission({ schedulerAllows: false, band: "below-execute" }).permitted).toBe(false);
-		expect(rebuildPermission({ schedulerAllows: false, band: "execute" }).permitted).toBe(false);
+		expect(
+			rebuildPermission({ schedulerAllows: false, band: "below-execute" })
+				.permitted,
+		).toBe(false);
+		expect(
+			rebuildPermission({ schedulerAllows: false, band: "execute" }).permitted,
+		).toBe(false);
 	});
 });
 
@@ -73,10 +106,14 @@ describe("episode gating", () => {
 		gates.commit("s-gate", "injection-strip", "primary");
 		expect(gates.allows(gate())).toBe(false);
 
-		expect(gates.allows(gate({ sessionId: "s-sub", role: "subagent" }))).toBe(true);
+		expect(gates.allows(gate({ sessionId: "s-sub", role: "subagent" }))).toBe(
+			true,
+		);
 		gates.commit("s-sub", "injection-strip", "subagent");
 		// A subagent keeps applying: it is short-lived and its caller is waiting.
-		expect(gates.allows(gate({ sessionId: "s-sub", role: "subagent" }))).toBe(true);
+		expect(gates.allows(gate({ sessionId: "s-sub", role: "subagent" }))).toBe(
+			true,
+		);
 	});
 
 	test("falling below the execute band starts a new episode", () => {
@@ -90,14 +127,28 @@ describe("episode gating", () => {
 
 	test("emergency runs only from the force band", () => {
 		const gates = new LaneGates();
-		expect(gates.allows(gate({ lane: "emergency", frequency: "emergency", band: "execute" }))).toBe(false);
-		expect(gates.allows(gate({ lane: "emergency", frequency: "emergency", band: "force" }))).toBe(true);
-		expect(gates.allows(gate({ lane: "emergency", frequency: "emergency", band: "refuse" }))).toBe(true);
+		expect(
+			gates.allows(
+				gate({ lane: "emergency", frequency: "emergency", band: "execute" }),
+			),
+		).toBe(false);
+		expect(
+			gates.allows(
+				gate({ lane: "emergency", frequency: "emergency", band: "force" }),
+			),
+		).toBe(true);
+		expect(
+			gates.allows(
+				gate({ lane: "emergency", frequency: "emergency", band: "refuse" }),
+			),
+		).toBe(true);
 	});
 
 	test("no permission ⇒ no lane, even an unclaimed episode", () => {
 		const gates = new LaneGates();
-		expect(gates.allows(gate({ permission: { permitted: false } }))).toBe(false);
+		expect(gates.allows(gate({ permission: { permitted: false } }))).toBe(
+			false,
+		);
 	});
 });
 
@@ -105,7 +156,12 @@ describe("episode gating", () => {
 function seedInjected(host: TestDshHost, id: string) {
 	const session = host.addSession({ id }, [0, 1, 2]);
 	session.seedMessage(0, "u-inj", INJECTED, "user");
-	session.seedMessage(1, "a-inj", `answer\n<system-reminder>note</system-reminder>`, "assistant");
+	session.seedMessage(
+		1,
+		"a-inj",
+		`answer\n<system-reminder>note</system-reminder>`,
+		"assistant",
+	);
 	session.seedMessage(2, "clean", "nothing injected here", "user");
 	return session;
 }
@@ -126,9 +182,14 @@ describe("injection-strip lane", () => {
 			db,
 			protectedMessageIds: new Set(),
 		});
-		expect(requests.map((request) => request.messageId).sort()).toEqual(["a-inj", "u-inj"]);
+		expect(requests.map((request) => request.messageId).sort()).toEqual([
+			"a-inj",
+			"u-inj",
+		]);
 		// The stripped bytes are the core stripper's, not a local approximation.
-		expect((requests[0]!.content[0] as { text: string }).text).not.toContain("<system-reminder>");
+		expect((requests[0]!.content[0] as { text: string }).text).not.toContain(
+			"<system-reminder>",
+		);
 	});
 
 	test("applies as one bracket, rewrites user and assistant nodes, replays identically", async () => {
@@ -146,24 +207,29 @@ describe("injection-strip lane", () => {
 				band: "execute",
 				permission: { permitted: true, reason: "scheduler" },
 				config: cfg,
-			db,
-			protectedMessageIds: new Set(),
+				db,
+				protectedMessageIds: new Set(),
 				lanes: [injectionStripLane],
 				gates: new LaneGates(),
 			});
 
 		const first = await pass();
 		expect(first.changed).toBe(true);
-		expect(first.outcomes[0]!.applied.map((op) => op.kind).sort()).toEqual(["assistant-rewrite", "user-rewrite"]);
+		expect(first.outcomes[0]!.applied.map((op) => op.kind).sort()).toEqual([
+			"assistant-rewrite",
+			"user-rewrite",
+		]);
 		expect(session.eventsOf("mc/manage-start")).toHaveLength(1);
 		expect(session.eventsOf("mc/manage-end")).toHaveLength(1);
 		// The assistant node is edited in place (projection), the user node replaced.
 		expect(session.rewrittenAssistantBodies).toHaveLength(1);
 		expect(session.replacements).toHaveLength(1);
 		const replaced = session.rewrittenUserMessages[0]!;
-		expect(session.logRecords().find((record) => record.seq === replaced.replacementSeq)!.text).toBe(
-			"real question\n\nmore text",
-		);
+		expect(
+			session
+				.logRecords()
+				.find((record) => record.seq === replaced.replacementSeq)!.text,
+		).toBe("real question\n\nmore text");
 
 		// The same projection re-plans the same bytes (determinism), and the
 		// already-stripped nodes no longer match, so nothing applies twice.
@@ -245,7 +311,9 @@ describe("lane engine containment", () => {
 		const managedEdits = new ManagedEdits(host);
 		const projection = projectDshSessionLog(session.logRecords());
 		// The node is rewritten before the lane's plan is applied.
-		await session.rewriteUserMessage(0, [{ type: "text", text: "already reduced" }]);
+		await session.rewriteUserMessage(0, [
+			{ type: "text", text: "already reduced" },
+		]);
 		const result = await runLanePass(managedEdits, {
 			session,
 			mcSession: "s-stale",
@@ -262,5 +330,74 @@ describe("lane engine containment", () => {
 		// The assistant target still applies; the user target is reported stale.
 		const skipped = result.outcomes[0]!.skipped.map((entry) => entry.reason);
 		expect(skipped).toContain("not-current");
+	});
+});
+
+describe("temporal lane", () => {
+	/** Two user turns four hours apart, plus an assistant answer in between. */
+	function seedGappy(host: TestDshHost, id: string) {
+		const session = host.addSession({ id }, [0, 1, 2]);
+		const base = 1_700_000_000_000;
+		session.seedMessage(0, "u1", "first question", "user", { createdAt: base });
+		session.seedMessage(1, "a1", "first answer", "assistant", {
+			createdAt: base + 1_000,
+		});
+		session.seedMessage(2, "u2", "second question", "user", {
+			createdAt: base + 4 * 60 * 60 * 1000,
+		});
+		return session;
+	}
+
+	test("marks the entering user message with the elapsed gap", () => {
+		const host = new TestDshHost();
+		const session = seedGappy(host, "s-time");
+		const requests = selectTemporalMarkers({
+			session,
+			mcSession: "s-time",
+			projection: projectDshSessionLog(session.logRecords()),
+			rules: PRIMARY,
+			band: "execute",
+			permission: { permitted: true, reason: "scheduler" },
+			config: cfg,
+			db,
+			protectedMessageIds: new Set(),
+		});
+		expect(requests.map((request) => request.messageId)).toEqual(["u2"]);
+		// The gap is measured from the PREVIOUS message's creation (the assistant
+		// answer one second after the first question), so 4h minus 1s.
+		expect((requests[0]!.content[0] as { text: string }).text).toBe(
+			"<!-- +3h 59m -->\nsecond question",
+		);
+	});
+
+	test("disabled config injects nothing; an existing marker is never doubled", () => {
+		const host = new TestDshHost();
+		const session = seedGappy(host, "s-time2");
+		const projection = projectDshSessionLog(session.logRecords());
+		const context = {
+			session,
+			mcSession: "s-time2",
+			projection,
+			rules: PRIMARY,
+			band: "execute" as const,
+			permission: { permitted: true, reason: "scheduler" as const },
+			config: { ...cfg, temporal_awareness: false },
+			db,
+			protectedMessageIds: new Set<string>(),
+		};
+		expect(selectTemporalMarkers(context)).toEqual([]);
+
+		const applied = selectTemporalMarkers({ ...context, config: cfg });
+		expect(applied).toHaveLength(1);
+		const replay = selectTemporalMarkers({
+			...context,
+			config: cfg,
+			projection: projectDshSessionLog([
+				{ ...session.logRecords()[0]! },
+				{ ...session.logRecords()[1]! },
+				{ ...session.logRecords()[2]!, text: "<!-- +4h -->\nsecond question" },
+			]),
+		});
+		expect(replay).toEqual([]);
 	});
 });
