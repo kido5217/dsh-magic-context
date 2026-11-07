@@ -106,6 +106,10 @@ function dshEnv(
 	return {
 		...process.env,
 		DSH_HOME: home,
+		// A live gate is production: `bun test` sets NODE_ENV=test for the
+		// PARENT, and the child would inherit it and redirect the store to the
+		// throwaway backstop (making every gate run against an empty DB).
+		NODE_ENV: "production",
 		// The shared MC store follows XDG_DATA_HOME. Pointing it inside the
 		// throwaway home keeps every live gate off the developer's real store
 		// (and inside the workspace sandbox).
@@ -143,6 +147,7 @@ function ensureFreshBuild(): void {
 		[
 			"build",
 			"src/index.ts",
+			"../plugin/src/features/magic-context/migration-worker.ts",
 			"--outdir",
 			"dist",
 			"--entry-naming",
@@ -151,6 +156,7 @@ function ensureFreshBuild(): void {
 			"node",
 			"--format",
 			"esm",
+			"--splitting",
 			"--external",
 			"@deepseek-ai/cordis",
 			"--external",
