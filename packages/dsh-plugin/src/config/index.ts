@@ -14,6 +14,12 @@ import {
 	cortexKitUserConfigBasePath,
 } from "@magic-context/core/config/migrate-config-location";
 import {
+	constrainProjectThresholdOverrides,
+	dropInheritedEmbeddingKeyOnRedirect,
+	restoreTrustedValuesOverInvalidProjectValues,
+	stripUnsafeProjectConfigFields,
+} from "@magic-context/core/config/project-security";
+import {
 	type MagicContextConfig,
 	MagicContextConfigSchema,
 } from "@magic-context/core/config/schema/magic-context";
@@ -21,6 +27,20 @@ import {
 	detectConfigFile,
 	readJsoncFile,
 } from "@magic-context/core/shared/jsonc-parser";
+
+/** Same shape as the core loader's issue collector, without the legacy
+ * migrations (DSH has no legacy config locations to relocate). */
+function collectDshSchemaIssuePaths(
+	raw: Record<string, unknown>,
+): PropertyKey[][] {
+	const parsed = MagicContextConfigSchema.safeParse(raw);
+	if (parsed.success) return [];
+	return parsed.error.issues.flatMap((issue) =>
+		issue.code === "unrecognized_keys"
+			? issue.keys.map((key) => [...issue.path, key])
+			: [[...issue.path]],
+	);
+}
 
 export interface LoadDshConfigResult {
 	config: MagicContextConfig;
@@ -93,7 +113,43 @@ export function loadDshConfig(
 		warnings,
 		loadedFromPaths,
 	);
+	// Project-tier trust boundary (identical to the shared core loader): the
+	// project layer lives in a cloned repo and is UNTRUSTED. Escalation fields
+	// (hidden-agent prompt/permission/tools, historian runner/host_runner and
+	// per-harness model fields, embeddings endpoint/provider redirection,
+	// prompt-surface override paths) are stripped before the merge; threshold
+	// overrides are constrain-after-merge so a repo may only DELAY historian
+	// work, never force earlier spend. Without this, a cloned repo could
+	// reprogram the autonomously running dreamer on DSH alone.
+	for (const warning of stripUnsafeProjectConfigFields(projectRaw)) {
+		warnings.push(`[project config] ${warning}`);
+	}
 	const raw = mergeRaw(userRaw, projectRaw);
+	if (Object.keys(projectRaw).length > 0) {
+		for (const warning of dropInheritedEmbeddingKeyOnRedirect(
+			projectRaw,
+			raw,
+			userRaw,
+		)) {
+			warnings.push(`[project config] ${warning}`);
+		}
+		for (const warning of constrainProjectThresholdOverrides({
+			mergedRaw: raw,
+			projectRaw,
+			trustedBaseConfig: MagicContextConfigSchema.parse(userRaw),
+		})) {
+			warnings.push(`[project config] ${warning}`);
+		}
+		const restored = restoreTrustedValuesOverInvalidProjectValues({
+			mergedRaw: raw,
+			trustedRaw: userRaw,
+			projectRaw,
+			collectIssuePaths: collectDshSchemaIssuePaths,
+		});
+		for (const warning of restored.warnings) {
+			warnings.push(`[project config] ${warning}`);
+		}
+	}
 	const parsed = MagicContextConfigSchema.safeParse(raw);
 	if (parsed.success) {
 		return { config: parsed.data, warnings, loadedFromPaths };

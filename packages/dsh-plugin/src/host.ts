@@ -252,6 +252,14 @@ export interface DshHost {
 	 * request (the waterfall's `retry` action); returning false/undefined lets
 	 * the failure stand. Used by overflow recovery (T028).
 	 */
+	/**
+	 * Session-close pruning (N-06, optional): fires when the host disposes a
+	 * session's agent, so resident hosts can release per-session in-memory
+	 * state (cached log snapshots, gates, claims). Adapters without a close
+	 * seam leave this unimplemented; the adapter then relies on dispose-time
+	 * detachAll, which is correct for one-shot CLI processes.
+	 */
+	onSessionClosed?(handler: (sessionId: string) => void): () => void;
 	onRequestError(
 		listener: (info: RequestErrorInfo) => boolean | Promise<boolean>,
 	): () => void;

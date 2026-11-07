@@ -11,11 +11,43 @@
  * malformed for the session store to open, and the store's own lifecycle
  * does not garbage-collect sessions no live agent owns.
  */
-import { readdirSync, rmSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** Session-id prefix of every hidden maintenance agent session. */
 export const MAINTENANCE_SESSION_PREFIX = "session-mc-maint-";
+
+/**
+ * N-10 age fence: a prefix match alone cannot tell a crashed orphan from a
+ * maintenance agent that is ALIVE in another process sharing this
+ * `$DSH_HOME/sessions` root (resident hosts, concurrent harness processes).
+ * Boot may only reap what has seen no activity for a full day: live agents
+ * append to their session log, an idle day means nobody owns the directory.
+ * Fresh-but-alive directories simply survive until a later boot reaps them.
+ */
+export const ORPHAN_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Newest mtime within one session directory (dir + one level of entries). */
+function newestActivityMs(dir: string): number {
+	let newest = 0;
+	try {
+		newest = statSync(dir).mtimeMs;
+	} catch {
+		return Number.POSITIVE_INFINITY; // vanished: nothing to reap anyway
+	}
+	try {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			try {
+				newest = Math.max(newest, statSync(join(dir, entry.name)).mtimeMs);
+			} catch {
+				// Raced removal of one entry: the dir-level mtime stands.
+			}
+		}
+	} catch {
+		// Unreadable listing: fall back to the directory mtime.
+	}
+	return newest;
+}
 
 /**
  * Delete crashed maintenance sessions under one session root
@@ -49,8 +81,14 @@ export function reapMaintenanceOrphans(sessionRoot: string): string[] {
 			continue;
 		}
 		for (const session of sessions) {
+			const path = join(dir, session);
+			if (Date.now() - newestActivityMs(path) < ORPHAN_MIN_AGE_MS) {
+				// N-10: too fresh to call dead — either this very process'
+				// agent (boot ordering races) or a sibling host's live agent.
+				continue;
+			}
 			try {
-				rmSync(join(dir, session), { recursive: true, force: true });
+				rmSync(path, { recursive: true, force: true });
 				removed.push(session);
 			} catch {
 				// Lost the race with a concurrent cleaner; it will be gone.

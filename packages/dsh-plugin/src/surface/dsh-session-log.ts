@@ -65,6 +65,13 @@ export interface DshLogProjection {
 		string,
 		{ readonly ordinal: number; readonly seq: number; readonly bytes: number }
 	>;
+	/**
+	 * The reverse index (N-14): ordinal → durable id. Built with the forward
+	 * map in one pass; without it, every boundary resolution scans the whole
+	 * projection once per protected-tail ordinal (quadratic on long
+	 * resident-host sessions).
+	 */
+	readonly byOrdinal: ReadonlyMap<number, string>;
 	readonly records: readonly DshLogMessageRecord[];
 }
 
@@ -93,6 +100,7 @@ export function projectDshSessionLog(
 		string,
 		{ ordinal: number; seq: number; bytes: number }
 	>();
+	const byOrdinal = new Map<number, string>();
 	let ordinal = 0;
 	for (const record of records) {
 		if (!PROJECTED_ROLES.has(record.role)) continue;
@@ -112,8 +120,9 @@ export function projectDshSessionLog(
 			seq: record.seq,
 			bytes: text.length,
 		});
+		byOrdinal.set(ordinal, record.messageId);
 	}
-	return { rawMessages, byMessageId, records };
+	return { rawMessages, byMessageId, byOrdinal, records };
 }
 
 /** Build the core `RawMessageProvider` over a live projection supplier. */

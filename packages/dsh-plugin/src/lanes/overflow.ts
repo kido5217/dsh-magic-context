@@ -172,8 +172,15 @@ export async function recoverOverflow(input: {
 	if (!input.gate.claim(input.sessionId)) return false;
 	try {
 		const outcome = await input.fold();
-		return outcome !== null;
+		if (outcome === null) {
+			// Nothing was folded: release the claim so a later overflow in the
+			// session can still attempt recovery (N-02).
+			input.gate.reset(input.sessionId);
+			return false;
+		}
+		return true;
 	} catch (error) {
+		input.gate.reset(input.sessionId);
 		log(
 			`[dsh-magic-context] overflow recovery fold failed for ${input.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
 		);

@@ -8,6 +8,7 @@ import type { CommandDefinition } from "@deepseek-ai/dsh-commands";
 import { CommandDefinitionId } from "@deepseek-ai/dsh-commands/brand";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import type { DreamTaskName } from "@magic-context/core/features/magic-context/dreamer/task-registry";
+import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { executeFlush } from "@magic-context/core/hooks/magic-context/execute-flush";
 import type { PressureLanes } from "../pressure/lanes.js";
@@ -65,16 +66,26 @@ function formatManualResult(result: {
 function lastDreamRunAt(
 	db: ContextDatabase,
 	projectDir: string,
-): number | null {
+): { lastRunAt: number | null; stateError?: string } {
+	// N-05: the core scheduler persists per-task state in `task_schedule_state`,
+	// keyed by the RESOLVED project identity (the same key the historian and
+	// scheduler write under), not the raw projectDir. N-06: a failed read is
+	// reported to the user, not silently rendered as "never".
+	const identity = resolveProjectIdentityForSession(projectDir);
+	if (identity === null)
+		return { lastRunAt: null, stateError: "no project identity for this cwd" };
 	try {
 		const row = db
 			.prepare(
-				"SELECT MAX(last_run_at) AS n FROM dream_task_schedule WHERE project_path = ?",
+				"SELECT MAX(last_run_at) AS n FROM task_schedule_state WHERE project_path = ?",
 			)
-			.get(projectDir) as { n?: number | null } | undefined;
-		return typeof row?.n === "number" ? row.n : null;
-	} catch {
-		return null;
+			.get(identity) as { n?: number | null } | undefined;
+		return { lastRunAt: typeof row?.n === "number" ? row.n : null };
+	} catch (error) {
+		return {
+			lastRunAt: null,
+			stateError: error instanceof Error ? error.message : String(error),
+		};
 	}
 }
 
@@ -113,7 +124,7 @@ export function registerCommands(deps: CommandDeps): () => void {
 						maintenance === undefined
 							? undefined
 							: {
-									lastRunAt: lastDreamRunAt(deps.db, deps.projectDir),
+									...lastDreamRunAt(deps.db, deps.projectDir),
 									unsupportedTasks: ["promote-primers"],
 								},
 				}),

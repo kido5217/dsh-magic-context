@@ -41,6 +41,7 @@ import {
 	readdirSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -645,6 +646,25 @@ describe("hidden agent live", () => {
 		// that nothing survives). The map-memories pool is drained and every
 		// schedule is in the future, so this boot creates no new session.
 		const firstRunDirs = [...sightings.keys()];
+		// N-10 doctrine: the boot reaper spares anything idle for less than
+		// a day (a live process elsewhere may own it). Backdate the residue
+		// to the production shape of an abandoned dir — days old, nothing
+		// writing — so the sweep is exercised on what it actually reaps.
+		const aged = new Date(Date.now() - 2 * 24 * 3_600_000);
+		for (const id of residual) {
+			for (const workspace of readdirSync(sessionsRoot)) {
+				const dir = join(sessionsRoot, workspace, id);
+				if (!existsSync(dir)) continue;
+				utimesSync(dir, aged, aged);
+				for (const entry of readdirSync(dir)) {
+					try {
+						utimesSync(join(dir, entry), aged, aged);
+					} catch {
+						/* vanished mid-test */
+					}
+				}
+			}
+		}
 		const reaperTurn = provider.requests.length;
 		const second = await home!.runHeadlessAsync("second boot", {
 			cwd: projectDir,

@@ -52,6 +52,17 @@ export interface PressureBands {
 export class PressureMeter {
 	private readonly bands: PressureBands;
 	private readonly loggedUnavailable = new Set<string>();
+	// Learned-window overlay (N-02): the band must price against
+	// min(advertised, learned) — the same doctrine as the core, which persists
+	// learned limits. Wired once from the overflow ledger; a meter without a
+	// ledger prices against the advertised window only.
+	private windowOverlay?: (sessionId: string, advertised: number) => number | undefined;
+
+	setWindowOverlay(
+		overlay: (sessionId: string, advertised: number) => number | undefined,
+	): void {
+		this.windowOverlay = overlay;
+	}
 
 	constructor(
 		private readonly host: DshHost,
@@ -82,13 +93,21 @@ export class PressureMeter {
 			}
 			return this.bands;
 		}
-		const percentage = Math.min(100, (tokens / window) * 100);
+		const learned = this.windowOverlay?.(sessionId, window);
+		const effective =
+			learned !== undefined && learned > 0 && learned < window ? learned : window;
+		const percentage = Math.min(100, (tokens / effective) * 100);
 		return {
 			percentage,
 			execute: this.bands.execute,
 			force: this.bands.force,
 			refuse: this.bands.refuse,
 		};
+	}
+
+	/** N-06: release per-session memory when the session closes. */
+	forget(sessionId: string): void {
+		this.loggedUnavailable.delete(sessionId);
 	}
 
 	/** Coarse lane for callers (T019): meter unavailable ⇒ "below-execute" (D6). */

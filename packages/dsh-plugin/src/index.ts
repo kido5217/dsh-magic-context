@@ -269,6 +269,11 @@ export function mountAdapter(
 
 	// T012 — pressure meter bridge.
 	const meter = new PressureMeter(host, config);
+	// N-02: every band computation (meter.read → meter.lane → all consumers)
+	// prices against min(advertised, learned). One overlay point, no drift.
+	meter.setWindowOverlay((sessionId, advertised) =>
+		overflowLedger.effectiveWindow(sessionId, advertised),
+	);
 	registerEffect("pressure-meter", () => () => undefined);
 
 	// [T015 pass] transform-pass bridge (US1): durable-log projection, queued
@@ -319,6 +324,7 @@ export function mountAdapter(
 		config,
 		mapping,
 		overflowWindows: overflowLedger,
+		overflowGate,
 		claim: compaction,
 		meter,
 		head,
@@ -335,6 +341,25 @@ export function mountAdapter(
 			lanes.detachAll();
 		};
 	});
+
+	// N-06 — resident-host lifecycle: DSH emits `agent/disposed` when a
+	// session's agent leaves the registry. Everything keyed by session id is
+	// released there, or `dsh web` grows without bound (the cached surface
+	// snapshot in the log source is pruned inside host-cordis itself).
+	registerEffect(
+		"session-close-pruning",
+		() =>
+			host.onSessionClosed?.((sessionId) => {
+				lanes.detach(sessionId);
+				compaction.detach(sessionId);
+				mapping.remove(sessionId);
+				meter.forget(sessionId);
+				head.forget(sessionId);
+				managedEdits.forget(sessionId);
+				overflowLedger.detach(sessionId);
+				overflowGate.reset(sessionId);
+			}) ?? (() => undefined),
+	);
 
 	// [T031 tools] the five ctx_* tools register here via host.registerTool.
 	// Same five for subagent sessions (FR-005); `sessionId()` resolves per call
@@ -425,106 +450,167 @@ export async function apply(
 		);
 		db = null;
 	}
+	// N-07: the mount body is a callable so the fail-closed arm can complete
+	// it LATER, when a transiently unavailable store answers again.
+	const mount = async (
+		store: NonNullable<Awaited<ReturnType<typeof openDatabaseAsync>>>,
+	): Promise<void> => {
+		process.once("exit", () => {
+			void closeDatabase();
+		});
+		const cwd = config?.cwd ?? process.cwd();
+		// Production pass wiring (T025): the log snapshot refreshes inside the one
+		// pre-step listener (host-cordis), before the management pass runs, and
+		// before every tool execution. The historian route rides the host's
+		// per-step model selection. (Waterfall listeners are dispatched
+		// innermost-registered-first and a decision short-circuits the chain, so
+		// the adapter owns exactly one listener and sequences its steps inside it.)
+		const sessionLog = createCordisSessionLogSource(ctx);
+		const historian = createCordisHistorianRoute();
+		const cordisHost = createCordisHost(ctx, {
+			sessionLog,
+			observeModel: historian.observe,
+		});
+		const handle = mountAdapter(cordisHost, loaded.config, store, {
+			readSessionLog: sessionLog.read,
+			historianRoute: historian.route,
+			projectDir: cwd,
+			attachments: ctx.attachments,
+		});
+		ctx.effect(() => handle.dispose, "dsh-magic-context");
+		// [T067 commands] the six ctx-* slash commands, dispatched by interactive
+		// surfaces against the agent that received them.
+		const disposeCommands = registerCommands({
+			db: store,
+			config: loaded.config,
+			lanes: handle.lanes,
+			version: packageMetadata.version,
+			projectDir: cwd,
+			maintenance: () => activeMaintenance,
+			register: (definition) => ctx.commands.register(definition),
+		});
+		ctx.effect(() => disposeCommands, "dsh-magic-context-commands");
+		// V6 registration proof: interactive surfaces list these; headless proves
+		// the mount reached the command registry (dispatch is surface-side).
+		process.stderr.write(
+			"[dsh-magic-context] commands registered: ctx-status, ctx-flush, ctx-embed, ctx-recomp, ctx-wrapup, ctx-dream\n",
+		);
+		// [T057 maintenance] the background dreamer: one adapter clock, two hidden
+		// carriers, core task logic. Gated on an explicit dreamer model block —
+		// a machine with no configured dreamer model must not churn failing runs.
+		const maintenanceModel = maintenanceRunnable(loaded.config);
+		if (maintenanceModel) {
+			const identity = resolveProjectIdentityForSession(cwd);
+			if (identity !== undefined) {
+				const historySource = createCordisSessionHistorySource(ctx);
+				let maintenance: MaintenanceHandle;
+				try {
+					maintenance = startMaintenance({
+						retrospectiveRawProvider: createDshRetrospectiveRawProvider(
+							historySource,
+							cwd,
+						),
+						primerRawProviderFactory:
+							createDshPrimerRawProviderFactory(historySource),
+						ctx,
+						llmStream: (options) => cordisHost.llmStream(options),
+						db: store,
+						config: loaded.config,
+						projectDir: cwd,
+						projectIdentity: identity,
+					});
+				} catch (error) {
+					console.error(
+						`[dsh-magic-context] maintenance mount failed: ${String(error)}`,
+					);
+					return;
+				}
+				ctx.effect(() => maintenance.stop, "dsh-magic-context-maintenance");
+				activeMaintenance = maintenance;
+			}
+		}
+	};
+
 	if (!db) {
-		// F-06: with the fail-closed key armed (default), deterministic
-		// inoperability is loud — every primary step is refused with a
-		// recoverable-error notice instead of silently falling through to
-		// host-native compaction (core `fail-closed-block.ts` doctrine).
-		if (loaded.config.fail_closed_blocking !== false) {
+		// N-07(a): a transient lock at plugin load — another harness
+		// mid-migration, a momentary FS failure — must not latch refusals for
+		// the process lifetime. Two backed-off attempts first; the arm below
+		// then keeps retrying lazily per step.
+		for (const delayMs of [250, 1_000]) {
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+			try {
+				db = await openDatabaseAsync({
+					dbPath,
+					nativeTurnDeadlines: true,
+				});
+				break;
+			} catch {
+				db = null;
+			}
+		}
+	}
+	if (!db) {
+		// N-07(b): core doctrine — with `compaction.enabled: false` the
+		// fail-closed gate is INERT. The knowledge layer degrades, but the
+		// user keeps a usable turn; refusing steps here would strand sessions
+		// the user could still run (subagents included).
+		const compactionOff = loaded.config.compaction?.enabled === false;
+		// N-07(c): when the arm is skipped, note the coverage truth: the
+		// bundle patch disables the host's native `compaction-basic` engine
+		// and this run never registered MC's — sessions grow to the provider
+		// wall unless the store returns (the lazy retry below remounts MC and
+		// coverage resumes) or the profile re-enables the native row by id.
+		const block =
+			loaded.config.fail_closed_blocking !== false && !compactionOff;
+		if (compactionOff) {
 			log(
-				"[dsh-magic-context] shared store unavailable; fail-closed: steps are refused until the store is recoverable",
+				"[dsh-magic-context] shared store unavailable; compaction.enabled=false ⇒ fail-closed is inert: turns pass, the knowledge layer stays degraded until the next start",
 			);
+		} else if (block) {
+			log(
+				"[dsh-magic-context] shared store unavailable; fail-closed: steps are refused until the store is recoverable (retried lazily)",
+			);
+		} else {
+			log(
+				"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run — sessions have NO active compaction (the native engine is disabled by the bundle patch; a profile may re-enable the `compaction-basic` row by id), and a mid-run store recovery remounts MC lazily",
+			);
+		}
+		if (!compactionOff) {
+			// N-07(a): the arm retries the open lazily; a successful retry
+			// completes the mount mid-run and the refusals stop by themself.
 			ctx.effect(() => {
-				const off = ctx.on(
-					"agent/pre-step",
-					(_payload: unknown, _next: unknown) =>
-						Promise.resolve({ kind: "reject" } as const),
-				);
+				let armed = true;
+				let retryAt = Date.now() + 15_000;
+				const off: () => void = ctx.on("agent/pre-step", (_payload, next) => {
+					if (Date.now() >= retryAt) {
+						retryAt = Date.now() + 15_000;
+						void openDatabaseAsync({
+							dbPath,
+							nativeTurnDeadlines: true,
+						})
+							.then((again) => {
+								if (!again) return undefined;
+								armed = false;
+								off();
+								log(
+									"[dsh-magic-context] shared store recovered; Magic Context mounts mid-run",
+								);
+								return mount(again);
+							})
+							.catch(() => undefined);
+					}
+					if (armed && block)
+						return Promise.resolve({ kind: "reject" } as const);
+					return next();
+				});
 				return () => {
 					off();
 				};
 			}, "dsh-magic-context-fail-closed");
-		} else {
-			log(
-				"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run",
-			);
 		}
 		return;
 	}
-	process.once("exit", () => {
-		void closeDatabase();
-	});
-	const cwd = config?.cwd ?? process.cwd();
-	// Production pass wiring (T025): the log snapshot refreshes inside the one
-	// pre-step listener (host-cordis), before the management pass runs, and
-	// before every tool execution. The historian route rides the host's
-	// per-step model selection. (Waterfall listeners are dispatched
-	// innermost-registered-first and a decision short-circuits the chain, so
-	// the adapter owns exactly one listener and sequences its steps inside it.)
-	const sessionLog = createCordisSessionLogSource(ctx);
-	const historian = createCordisHistorianRoute();
-	const cordisHost = createCordisHost(ctx, {
-		sessionLog,
-		observeModel: historian.observe,
-	});
-	const handle = mountAdapter(cordisHost, loaded.config, db, {
-		readSessionLog: sessionLog.read,
-		historianRoute: historian.route,
-		projectDir: cwd,
-		attachments: ctx.attachments,
-	});
-	ctx.effect(() => handle.dispose, "dsh-magic-context");
-	// [T067 commands] the six ctx-* slash commands, dispatched by interactive
-	// surfaces against the agent that received them.
-	const disposeCommands = registerCommands({
-		db,
-		config: loaded.config,
-		lanes: handle.lanes,
-		version: packageMetadata.version,
-		projectDir: cwd,
-		maintenance: () => activeMaintenance,
-		register: (definition) => ctx.commands.register(definition),
-	});
-	ctx.effect(() => disposeCommands, "dsh-magic-context-commands");
-	// V6 registration proof: interactive surfaces list these; headless proves
-	// the mount reached the command registry (dispatch is surface-side).
-	process.stderr.write(
-		"[dsh-magic-context] commands registered: ctx-status, ctx-flush, ctx-embed, ctx-recomp, ctx-wrapup, ctx-dream\n",
-	);
-	// [T057 maintenance] the background dreamer: one adapter clock, two hidden
-	// carriers, core task logic. Gated on an explicit dreamer model block —
-	// a machine with no configured dreamer model must not churn failing runs.
-	const maintenanceModel = maintenanceRunnable(loaded.config);
-	if (maintenanceModel) {
-		const identity = resolveProjectIdentityForSession(cwd);
-		if (identity !== undefined) {
-			const historySource = createCordisSessionHistorySource(ctx);
-			let maintenance: MaintenanceHandle;
-			try {
-				maintenance = startMaintenance({
-					retrospectiveRawProvider: createDshRetrospectiveRawProvider(
-						historySource,
-						cwd,
-					),
-					primerRawProviderFactory:
-						createDshPrimerRawProviderFactory(historySource),
-					ctx,
-					llmStream: (options) => cordisHost.llmStream(options),
-					db,
-					config: loaded.config,
-					projectDir: cwd,
-					projectIdentity: identity,
-				});
-			} catch (error) {
-				console.error(
-					`[dsh-magic-context] maintenance mount failed: ${String(error)}`,
-				);
-				return;
-			}
-			ctx.effect(() => maintenance.stop, "dsh-magic-context-maintenance");
-			activeMaintenance = maintenance;
-		}
-	}
+	await mount(db);
 }
 
 export type { McFoldCallback } from "./compaction-claim.js";

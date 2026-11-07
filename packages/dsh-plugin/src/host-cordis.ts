@@ -328,6 +328,7 @@ export interface CordisHostOptions {
 	 * the routed model's advertised modality — unknown routes report false.
 	 */
 	readonly observeModel?: (
+		sessionId: string,
 		selection: ModelSelection | undefined,
 		imageInput: boolean,
 	) => void;
@@ -360,6 +361,10 @@ export function createCordisHost(
 	// the refusal blocks the very request that would refresh the reading
 	// (spec Edge Cases — model switch; observed live on 0.2.2-rc.1).
 	const routedWindows = new Map<string, number>();
+	// N-06: route observations die with the session even without a consumer.
+	ctx.on("agent/disposed", (payload) => {
+		routedWindows.delete(payload.agent.session.id);
+	});
 	return {
 		ctx,
 		getSession,
@@ -442,7 +447,7 @@ export function createCordisHost(
 					} else {
 						routedWindows.delete(sessionId);
 					}
-					observeModel?.(payload.modelSelection, imageInput);
+					observeModel?.(sessionId, payload.modelSelection, imageInput);
 					if (source !== undefined) {
 						// The pass bridge reads the snapshot synchronously; refresh
 						// it here, the one async moment before every listener. A
@@ -455,7 +460,11 @@ export function createCordisHost(
 								`[dsh-magic-context] session-log prefetch failed for ${sessionId}; refusing step fail-closed: ${error instanceof Error ? error.message : String(error)}`,
 							);
 							try {
-								getSession(sessionId)?.appendTail([
+								// Awaited: a floating promise here is the
+								// unhandled-rejection class DSH treats as
+								// process-fatal (N-08). The enclosing
+								// function is already async.
+								await getSession(sessionId)?.appendTail([
 									{
 										type: "text",
 										text: "Magic Context could not read the session log before this step and refused it (fail-closed): the pass never runs on an unverifiable history.",
@@ -475,6 +484,15 @@ export function createCordisHost(
 					return decision === "reject" ? { kind: "reject" } : next();
 				})(),
 			);
+		},
+		onSessionClosed(handler: (sessionId: string) => void): () => void {
+			// N-06: `agent/disposed` is DSH's session-close signal — the agent
+			// left the registry (host runtime-types: emitted after driver
+			// quiescence and scoped-registration unwind). One session, one
+			// agent: this is when its resident state may go.
+			return ctx.on("agent/disposed", (payload) => {
+				handler(payload.agent.session.id);
+			});
 		},
 		onRequestError(
 			listener: (info: RequestErrorInfo) => boolean | Promise<boolean>,
@@ -566,6 +584,14 @@ export function createCordisSessionLogSource(
 ): CordisSessionLogSource {
 	const cache = new Map<string, readonly DshLogMessageRecord[]>();
 	const todos = new Map<string, TodoState>();
+	// N-06: the cached surface snapshot (full record bodies) is the dominant
+	// resident-host growth item; it must not outlive the session. Entries are
+	// re-read from the host on the next prefetch, so this is pure release.
+	ctx.on("agent/disposed", (payload) => {
+		const sessionId = payload.agent.session.id;
+		cache.delete(sessionId);
+		todos.delete(sessionId);
+	});
 	return {
 		read: (dshSessionId) => cache.get(dshSessionId),
 		async prefetch(dshSessionId: string): Promise<void> {
@@ -654,29 +680,46 @@ export function createCordisSessionLogSource(
  */
 export function createCordisHistorianRoute(): {
 	readonly observe: (
+		sessionId: string,
 		selection: ModelSelection | undefined,
 		imageInput: boolean,
 	) => void;
 	readonly route: HistorianRoute;
 } {
-	let current: ModelSelection | undefined;
-	let imageInput = false;
+	// N-15: model selection is per agent. A single process-global "last
+	// prepare wins" selection made concurrent sessions price their folds
+	// against whichever session most recently stepped; the observed
+	// selection is now kept per session, with the last observation as the
+	// fallback for folds of never-observed sessions.
+	const perSession = new Map<
+		string,
+		{ selection: ModelSelection; imageInput: boolean }
+	>();
+	let last: { selection: ModelSelection; imageInput: boolean } | undefined;
 	return {
-		observe: (selection, modalities) => {
-			if (selection !== undefined) {
-				current = selection;
-				imageInput = modalities;
-			}
+		observe: (sessionId, selection, modalities) => {
+			if (selection === undefined) return;
+			last = { selection, imageInput: modalities };
+			perSession.set(sessionId, last);
 		},
 		route: {
 			get provider(): string {
-				return current?.provider ?? "";
+				return last?.selection.provider ?? "";
 			},
 			get model(): string {
-				return current?.model ?? "";
+				return last?.selection.model ?? "";
 			},
 			get imageInput(): boolean {
-				return imageInput;
+				return last?.imageInput ?? false;
+			},
+			forSession: (sessionId) => {
+				const seen = perSession.get(sessionId) ?? last;
+				if (seen === undefined) return undefined;
+				return {
+					provider: seen.selection.provider,
+					model: seen.selection.model,
+					imageInput: seen.imageInput,
+				};
 			},
 		},
 	};

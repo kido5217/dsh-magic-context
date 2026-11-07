@@ -29,7 +29,9 @@
 
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import {
+	type CompartmentInput,
 	getCompartments,
+	getSessionFacts,
 	replaceAllCompartmentState,
 } from "@magic-context/core/features/magic-context/compartment-storage";
 import {
@@ -63,7 +65,7 @@ import { supersessionLane } from "../lanes/reclaim.js";
 import { channel2Lease, reduceNudgeLane } from "../lanes/reduce-nudge.js";
 import { temporalLane } from "../lanes/temporal.js";
 import { todoDelivery, todoLane } from "../lanes/todo.js";
-import type { Historian } from "../sessions/historian.js";
+import type { FoldOutcome, Historian } from "../sessions/historian.js";
 import { indexDshSessionHistory } from "../sessions/history-index.js";
 import type { SessionMapping } from "../sessions/mapping.js";
 import { type McRoleRules, rulesForRole } from "../sessions/subagent-rules.js";
@@ -108,6 +110,13 @@ export interface PressureLanesDeps {
 	/** Workspace directory backing project identity (auto-search). */
 	readonly projectDir: string;
 	/** Learned route windows from overflow recovery (T028); optional in tests. */
+	/** Learned-overflow recovery gate (N-02): a pass runs only after the
+	 *  previous provider request completed, which proves any recovery fold
+	 *  served successfully — release the one-shot claim so the next overflow
+	 *  is a new episode, not a dead session. */
+	readonly overflowGate?: {
+		reset(sessionId: string): void;
+	};
 	readonly overflowWindows?: {
 		effectiveWindow(
 			sessionId: string,
@@ -156,9 +165,13 @@ export class PressureLanes {
 	};
 
 	detach(sessionId: string): void {
-		this.attachedSessions.get(sessionId)?.unregisterProvider();
+		const state = this.attachedSessions.get(sessionId);
+		state?.unregisterProvider();
 		this.attachedSessions.delete(sessionId);
 		this.gates.detach(sessionId);
+		// N-06: the refusal episode is session state too.
+		this.refusalEpisode.delete(sessionId);
+		if (state !== undefined) todoDelivery.forget(state.mcSession);
 	}
 
 	detachAll(): void {
@@ -167,6 +180,8 @@ export class PressureLanes {
 		this.attachedSessions.clear();
 		this.refusalEpisode.clear();
 		this.gates.detachAll();
+		// The module-level delivery ledger is per-mount process state.
+		todoDelivery.detachAll();
 	}
 
 	private attach(session: DshSession): AttachedSession {
@@ -279,6 +294,10 @@ export class PressureLanes {
 		// point). The managed pass stays out of the way; the next step runs
 		// it as usual.
 		if (this.deps.claim.foldInFlight(session.id)) return "enter";
+		// Reaching a pre-step means the previous request completed (N-02):
+		// any recovery fold that served is done; the claim releases and the
+		// next overflow gets its own one-shot retry.
+		this.deps.overflowGate?.reset(session.id);
 		const lane = this.deps.meter.lane(session.id); // fresh EVERY pass
 		const measured = this.deps.host.pressure(session.id);
 		// A route that already rejected one request is priced against what it
@@ -382,9 +401,11 @@ export class PressureLanes {
 		// execute). Nothing below the band may apply new edits anyway.
 		if (lane === "below-execute") {
 			this.gates.resetEpisode(session.id);
-			// A new pressure episode re-arms the once-per-episode nudges.
+			// A new pressure episode re-arms the once-per-episode nudges — for
+			// THIS session only (N-15: detachAll here re-armed every other
+			// session's todo delivery too).
 			channel2Lease.reset(state.mcSession);
-			todoDelivery.detachAll();
+			todoDelivery.forget(state.mcSession);
 		}
 		let changed = false;
 		const autoQueue =
@@ -503,12 +524,57 @@ export class PressureLanes {
 		}
 		try {
 			const projection = projectDshSessionLog(this.readRecords(dshSessionId));
+			// N-11: a full rebuild wipes the published compartments so the fold
+			// rebuilds coverage from message one — but if the fold then produces
+			// no replacement (no route, aux error, truncated reply: null or a
+			// throw), other hosts roll the wipe back rather than silently losing
+			// history until pressure re-folds everything. Snapshot the published
+			// state so the wipe is conditional on the fold succeeding.
+			let rebuild:
+				| {
+						compartments: CompartmentInput[];
+						facts: Array<{ category: string; content: string }>;
+				  }
+				| undefined;
 			if (opts.fullRebuild === true) {
-				if (getCompartments(this.deps.db, state.mcSession).length === 0) {
+				const published = getCompartments(this.deps.db, state.mcSession);
+				if (published.length === 0) {
 					return "Nothing to rebuild: this session has no published compartments.";
 				}
+				rebuild = {
+					compartments: published.map((compartment) => ({
+						sequence: compartment.sequence,
+						startMessage: compartment.startMessage,
+						endMessage: compartment.endMessage,
+						startMessageId: compartment.startMessageId,
+						endMessageId: compartment.endMessageId,
+						startBlockIndex: compartment.startBlockIndex,
+						endBlockIndex: compartment.endBlockIndex,
+						title: compartment.title,
+						content: compartment.content,
+						p1: compartment.p1,
+						p2: compartment.p2,
+						p3: compartment.p3,
+						p4: compartment.p4,
+						importance: compartment.importance,
+						episodeType: compartment.episodeType,
+					})),
+					facts: getSessionFacts(this.deps.db, state.mcSession).map((fact) => ({
+						category: fact.category,
+						content: fact.content,
+					})),
+				};
 				replaceAllCompartmentState(this.deps.db, state.mcSession, [], []);
 			}
+			const restoreRebuild = (): void => {
+				if (rebuild === undefined) return;
+				replaceAllCompartmentState(
+					this.deps.db,
+					state.mcSession,
+					rebuild.compartments,
+					rebuild.facts,
+				);
+			};
 			const window = this.deps.host.pressure(dshSessionId)?.contextWindow;
 			const protectedTailTokens =
 				opts.keepMessages !== undefined
@@ -521,14 +587,30 @@ export class PressureLanes {
 								0,
 							)
 					: protectedTailBudget(this.deps.config, window, true);
-			const fold = await this.deps.historian.fold({
-				session,
-				mcSession: state.mcSession,
-				projection,
-				rules: state.rules,
-				subagent: state.rules.role === "subagent",
-				protectedTailTokens,
-			});
+			let fold: FoldOutcome | null;
+			try {
+				fold = await this.deps.historian.fold({
+					session,
+					mcSession: state.mcSession,
+					projection,
+					rules: state.rules,
+					subagent: state.rules.role === "subagent",
+					protectedTailTokens,
+				});
+			} catch (error) {
+				// N-11: the fold threw after the wipe — put the published history
+				// back and refresh the head to the restored state before
+				// rethrowing, so a failed rebuild is not a knowledge gap.
+				restoreRebuild();
+				await this.deps.head.refresh(session, {
+					mcSession: state.mcSession,
+					subagent: state.rules.role === "subagent",
+					projection,
+					managedChangeLanded: true,
+				});
+				throw error;
+			}
+			if (fold === null) restoreRebuild();
 			await this.deps.head.refresh(session, {
 				mcSession: state.mcSession,
 				subagent: state.rules.role === "subagent",

@@ -7,6 +7,7 @@
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage";
 import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
+import { getPendingOpsCount } from "@magic-context/core/features/magic-context/storage-ops";
 import {
 	buildStatusView,
 	type StatusSection,
@@ -21,6 +22,9 @@ export interface StatusCommandExtras {
 	readonly dreamer?: {
 		readonly lastRunAt: number | null;
 		readonly unsupportedTasks: readonly string[];
+		/** Set when the schedule state could not be read at all: "never ran"
+		 *  and "cannot tell" are different facts (N-06). */
+		readonly stateError?: string;
 	};
 }
 
@@ -147,7 +151,9 @@ export function buildStatusText(
 		profileTokens: 0,
 		historyBlockTokens: 0,
 		lastNudgeTokens: meta.lastNudgeTokens,
-		pendingOpsCount: 0,
+		// N-13: the real queue depth — drops strip in the NEXT pass, and the
+		// user needs to see that (other hosts show this via the same view).
+		pendingOpsCount: getPendingOpsCount(db, mcSession) ?? 0,
 		cacheTtl,
 		lastResponseTime: meta.lastResponseTime,
 		cacheRemainingMs:
@@ -172,7 +178,11 @@ export function buildStatusText(
 		version: extras.version,
 		now,
 	});
-	return renderView(view);
+	const rendered = renderView(view);
+	const stateError = extras.dreamer?.stateError;
+	return stateError === undefined
+		? rendered
+		: `${rendered}\n\n(warning) dream schedule state unreadable: ${stateError}`;
 }
 
 function ttlMs(ttl: string): number {

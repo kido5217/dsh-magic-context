@@ -29,6 +29,14 @@ export class TodoDelivery {
 		return true;
 	}
 
+	/**
+	 * N-15: per-session re-arm. One session's below-execute episode end must
+	 * not re-deliver ANOTHER session's current todo revision mid-episode.
+	 */
+	forget(sessionId: string): void {
+		this.deliveredSeq.delete(sessionId);
+	}
+
 	detachAll(): void {
 		this.deliveredSeq.clear();
 	}

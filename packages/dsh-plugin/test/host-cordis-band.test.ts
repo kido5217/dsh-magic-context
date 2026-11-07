@@ -14,7 +14,13 @@ interface StubOptions {
 }
 
 function stubHost(options: StubOptions = {}) {
-	const handlers: Array<(payload: any, next: () => any) => Promise<any>> = [];
+	// Type-aware: cordis dispatches by event name, and the host registers
+	// several listeners (pre-step, disposed) — a positional stub would grab
+	// the wrong one.
+	const handlers = new Map<
+		string,
+		Array<(payload: any, next: () => any) => Promise<any>>
+	>();
 	const ctx = {
 		agents: { get: () => ({ session: { id: "s1" } }) },
 		tokenMeter: {
@@ -31,8 +37,10 @@ function stubHost(options: StubOptions = {}) {
 					: { config: {}, context: { contextWindow: options.catalogWindow } };
 			},
 		},
-		on: (_type: string, handler: any) => {
-			handlers.push(handler);
+		on: (type: string, handler: any) => {
+			const list = handlers.get(type) ?? [];
+			list.push(handler);
+			handlers.set(type, list);
 			return () => {};
 		},
 	} as unknown as Context;
@@ -43,7 +51,7 @@ function stubHost(options: StubOptions = {}) {
 		provider: string;
 		model: string;
 	}) => {
-		const handler = handlers[0]!;
+		const handler = (handlers.get("agent/pre-step") ?? [])[0]!;
 		await handler(
 			{ agent: { session: { id: "s1" } }, modelSelection, turn: 1, step: 1 },
 			() => ({ kind: "continue" }),

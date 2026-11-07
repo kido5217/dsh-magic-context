@@ -216,6 +216,19 @@ describe("profile compaction patch parsing", () => {
         ).toBe("re-enabled");
     });
 
+    it("reads the VALUE of an enabled:/disabled: key, not just its shape (N-15)", () => {
+        expect(parseDshCompactionState("- id: compaction-basic\n  enabled: true\n")).toBe(
+            "re-enabled",
+        );
+        expect(parseDshCompactionState("- id: compaction-basic\n  enabled: false\n")).toBe(
+            "disabled",
+        );
+        // Last explicit key wins within one row.
+        expect(
+            parseDshCompactionState("- id: compaction-basic\n  disabled: true\n  enabled: true\n"),
+        ).toBe("re-enabled");
+    });
+
     it("treats a patch without the row (or missing file) as absent", () => {
         expect(parseDshCompactionState("[]\n")).toBe("absent");
         expect(parseDshCompactionState("- id: llm-pi-ai\n  config: {}\n")).toBe("absent");
