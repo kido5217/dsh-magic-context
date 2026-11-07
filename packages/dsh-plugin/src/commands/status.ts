@@ -21,6 +21,9 @@ export interface StatusCommandExtras {
 	readonly dreamer?: {
 		readonly lastRunAt: number | null;
 		readonly unsupportedTasks: readonly string[];
+		/** Set when the schedule state could not be read at all: "never ran"
+		 *  and "cannot tell" are different facts (N-06). */
+		readonly stateError?: string;
 	};
 }
 
@@ -172,7 +175,11 @@ export function buildStatusText(
 		version: extras.version,
 		now,
 	});
-	return renderView(view);
+	const rendered = renderView(view);
+	const stateError = extras.dreamer?.stateError;
+	return stateError === undefined
+		? rendered
+		: `${rendered}\n\n(warning) dream schedule state unreadable: ${stateError}`;
 }
 
 function ttlMs(ttl: string): number {
