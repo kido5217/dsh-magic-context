@@ -56,7 +56,10 @@ export interface RegisterMagicContextToolsDshOptions {
  * `opts.sessionId` is only a test/double fallback; production passes a resolver
  * that throws when a tool runs outside an agent turn.
  */
-function sessionIdForCall(opts: { readonly sessionId: () => string }, exec?: ToolRunContext): string {
+function sessionIdForCall(
+	opts: { readonly sessionId: () => string },
+	exec?: ToolRunContext,
+): string {
 	const agentId = exec?.agent?.id;
 	if (agentId !== undefined) return String(agentId);
 	return opts.sessionId();

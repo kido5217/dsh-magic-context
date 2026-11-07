@@ -67,24 +67,46 @@ export class McCompactionClaim extends CompactionEngine {
 		super(ctx);
 	}
 
-	override compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal): Promise<CompactionResult | null> {
+	override compactIfNeeded(
+		agent: CompactionAgentContext,
+		trigger: CompactionTrigger,
+		_signal: AbortSignal,
+	): Promise<CompactionResult | null> {
 		if (this.registry.isManaged(agent.session.id)) {
-			log(`[dsh-magic-context] compaction trigger "${trigger}" deferred for session ${agent.session.id}: Magic Context owns folding on managed sessions (T011)`);
+			log(
+				`[dsh-magic-context] compaction trigger "${trigger}" deferred for session ${agent.session.id}: Magic Context owns folding on managed sessions (T011)`,
+			);
 		}
 		return Promise.resolve(null);
 	}
 
-	override compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, _sourceCommandId?: unknown): Promise<CompactionResult | null> {
-		if (!this.registry.isManaged(agent.session.id)) return Promise.resolve(null);
+	override compactNow(
+		agent: ManualCompactAgentContext,
+		signal: AbortSignal,
+		_sourceCommandId?: unknown,
+	): Promise<CompactionResult | null> {
+		if (!this.registry.isManaged(agent.session.id))
+			return Promise.resolve(null);
 		return this.fold(agent, undefined, signal);
 	}
 
-	override async compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult> {
+	override async compactRegion(
+		start: number,
+		end: number,
+		agent: CompactionAgentContext,
+		signal?: AbortSignal,
+	): Promise<CompactionResult> {
 		if (this.registry.isManaged(agent.session.id)) {
 			const result = await this.fold(agent, { start, end }, signal);
 			if (result) return result;
-			throw new ManualCompactionError("changed", `Magic Context fold produced no result for region ${start}..${end} of session ${agent.session.id}`);
+			throw new ManualCompactionError(
+				"changed",
+				`Magic Context fold produced no result for region ${start}..${end} of session ${agent.session.id}`,
+			);
 		}
-		throw new ManualCompactionError("changed", `session ${agent.session.id} is not Magic-Context-managed; no MC decision backs this region fold`);
+		throw new ManualCompactionError(
+			"changed",
+			`session ${agent.session.id} is not Magic-Context-managed; no MC decision backs this region fold`,
+		);
 	}
 }

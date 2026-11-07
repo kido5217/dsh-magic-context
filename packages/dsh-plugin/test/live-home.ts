@@ -20,6 +20,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -103,7 +104,7 @@ function dshEnv(
 	home: string,
 	extra: Record<string, string> = {},
 ): Record<string, string> {
-	return {
+	const env: Record<string, string | undefined> = {
 		...process.env,
 		DSH_HOME: home,
 		// A live gate is production: `bun test` sets NODE_ENV=test for the
@@ -115,17 +116,32 @@ function dshEnv(
 		// (and inside the workspace sandbox).
 		XDG_DATA_HOME: join(home, "data"),
 		...extra,
-	} as Record<string, string>;
+	};
+	// The test preload pins the store for the PARENT process; an inherited pin
+	// would silently override this home's XDG_DATA_HOME and every live gate
+	// would read someone else's database.
+	delete env["MAGIC_CONTEXT_STORAGE_DIR"];
+	delete env["MAGIC_CONTEXT_TEST_DATA_DIR"];
+	return env as Record<string, string>;
 }
 
 /** Newest mtime under a source tree. */
 function newestMtime(directory: string): number {
 	let newest = 0;
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
-		if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "tmp") continue;
+		if (
+			entry.name === "node_modules" ||
+			entry.name === "dist" ||
+			entry.name === "tmp"
+		)
+			continue;
 		const path = join(directory, entry.name);
 		if (entry.isDirectory()) newest = Math.max(newest, newestMtime(path));
-		else if (entry.name.endsWith(".ts") || entry.name.endsWith(".json") || entry.name.endsWith(".yml")) {
+		else if (
+			entry.name.endsWith(".ts") ||
+			entry.name.endsWith(".json") ||
+			entry.name.endsWith(".yml")
+		) {
 			newest = Math.max(newest, statSync(path).mtimeMs);
 		}
 	}
@@ -142,6 +158,11 @@ function ensureFreshBuild(): void {
 	const distEntry = join(PACKAGE_DIR, "dist", "index.js");
 	const source = newestMtime(join(PACKAGE_DIR, "src"));
 	if (existsSync(distEntry) && statSync(distEntry).mtimeMs >= source) return;
+	// Build into a sibling directory and swap it in: parallel live tests can
+	// boot a child at any moment, and a rebuild in place would hand that child
+	// a half-written bundle (which presents as "the plugin never loaded").
+	const staging = join(PACKAGE_DIR, "dist.next");
+	rmSync(staging, { recursive: true, force: true });
 	const build = spawnSync(
 		"bun",
 		[
@@ -149,7 +170,7 @@ function ensureFreshBuild(): void {
 			"src/index.ts",
 			"../plugin/src/features/magic-context/migration-worker.ts",
 			"--outdir",
-			"dist",
+			"dist.next",
 			"--entry-naming",
 			"[name].[ext]",
 			"--target",
@@ -180,9 +201,28 @@ function ensureFreshBuild(): void {
 			"--external",
 			"node:sqlite",
 		],
-		{ cwd: PACKAGE_DIR, encoding: "utf8", timeout: 120_000 },
+		{
+			cwd: PACKAGE_DIR,
+			encoding: "utf8",
+			timeout: 120_000,
+			// Bun's bundler INLINES `process.env.NODE_ENV` when it can. Building
+			// from inside `bun test` would freeze NODE_ENV="test" into the bundle
+			// and every live child would take the plugin's test backstop.
+			env: { ...process.env, NODE_ENV: "production" },
+		},
 	);
-	if (build.status !== 0) throw new Error(`dsh-magic-context build failed: ${build.stderr || build.stdout}`);
+	if (build.status !== 0) {
+		rmSync(staging, { recursive: true, force: true });
+		throw new Error(
+			`dsh-magic-context build failed: ${build.stderr || build.stdout}`,
+		);
+	}
+	const live = join(PACKAGE_DIR, "dist");
+	const retiring = join(PACKAGE_DIR, "dist.prev");
+	rmSync(retiring, { recursive: true, force: true });
+	if (existsSync(live)) renameSync(live, retiring);
+	renameSync(staging, live);
+	rmSync(retiring, { recursive: true, force: true });
 }
 
 /** Seed a throwaway `headless` profile that loads this package as a bundle. */
@@ -318,7 +358,12 @@ export function createLiveHome(options: LiveHomeOptions = {}): LiveHome {
 				encoding: "utf8",
 				timeout: Number(process.env.MC_DSH_TURN_TIMEOUT_MS ?? 300_000),
 			});
-			return toTurnResult(result.stdout, result.stderr, result.status, result.signal);
+			return toTurnResult(
+				result.stdout,
+				result.stderr,
+				result.status,
+				result.signal,
+			);
 		},
 		async runHeadlessAsync(prompt, runOptions = {}) {
 			const child = spawn(DSH_BIN, turnArgs(profile, prompt, runOptions), {
@@ -350,7 +395,18 @@ export function createLiveHome(options: LiveHomeOptions = {}): LiveHome {
 			return toTurnResult(stdout, stderr, outcome.code, outcome.signal);
 		},
 		dispose() {
-			rmSync(root, { recursive: true, force: true });
+			// A just-exited child can leave the store's lock momentarily held;
+			// a failed cleanup must never fail the gate itself.
+			try {
+				rmSync(root, {
+					recursive: true,
+					force: true,
+					maxRetries: 10,
+					retryDelay: 50,
+				});
+			} catch {
+				/* best effort: the tree lives under the ignored tmp/ root */
+			}
 		},
 	};
 }
@@ -373,7 +429,11 @@ interface TurnOptions {
 	readonly env?: Record<string, string>;
 }
 
-function turnArgs(profile: string, prompt: string, options: TurnOptions): string[] {
+function turnArgs(
+	profile: string,
+	prompt: string,
+	options: TurnOptions,
+): string[] {
 	const args = ["--profile", profile, "--json", ...(options.args ?? [])];
 	if (options.sessionId) args.push("--session-id", options.sessionId);
 	args.push(prompt);

@@ -18,15 +18,26 @@
  * null`, treated as **below the execute threshold** and logged once per
  * session (D6: conservative, never fabricate pressure).
  */
-import { DEFAULT_EXECUTE_THRESHOLD_PERCENTAGE, type MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
-import { escalationBands, MAX_EXECUTE_THRESHOLD } from "@magic-context/core/shared/escalation-bands";
+import {
+	DEFAULT_EXECUTE_THRESHOLD_PERCENTAGE,
+	type MagicContextConfig,
+} from "@magic-context/core/config/schema/magic-context";
+import {
+	escalationBands,
+	MAX_EXECUTE_THRESHOLD,
+} from "@magic-context/core/shared/escalation-bands";
 import { log } from "@magic-context/core/shared/logger";
 import type { DshHost } from "../host.js";
 
 /** Resolve the shared execute threshold percentage (number or routed `{default}`). */
-export function resolveExecuteThresholdPercentage(config: Pick<MagicContextConfig, "execute_threshold_percentage">): number {
+export function resolveExecuteThresholdPercentage(
+	config: Pick<MagicContextConfig, "execute_threshold_percentage">,
+): number {
 	const value = config.execute_threshold_percentage;
-	const threshold = typeof value === "number" ? value : (value?.default ?? DEFAULT_EXECUTE_THRESHOLD_PERCENTAGE);
+	const threshold =
+		typeof value === "number"
+			? value
+			: (value?.default ?? DEFAULT_EXECUTE_THRESHOLD_PERCENTAGE);
 	return Math.min(threshold, MAX_EXECUTE_THRESHOLD);
 }
 
@@ -47,8 +58,14 @@ export class PressureMeter {
 		config: Pick<MagicContextConfig, "execute_threshold_percentage">,
 	) {
 		const execute = resolveExecuteThresholdPercentage(config);
-		const { forceMaterializationPercentage, emergencyPercentage } = escalationBands(execute);
-		this.bands = { percentage: null, execute, force: forceMaterializationPercentage, refuse: emergencyPercentage };
+		const { forceMaterializationPercentage, emergencyPercentage } =
+			escalationBands(execute);
+		this.bands = {
+			percentage: null,
+			execute,
+			force: forceMaterializationPercentage,
+			refuse: emergencyPercentage,
+		};
 	}
 
 	/** Current banded pressure for one session; never throws, null = below execute. */
@@ -59,12 +76,19 @@ export class PressureMeter {
 		if (tokens === undefined || window === undefined || window <= 0) {
 			if (!this.loggedUnavailable.has(sessionId)) {
 				this.loggedUnavailable.add(sessionId);
-				log(`[dsh-magic-context] token meter unavailable for session ${sessionId}; treating pressure as below the execute threshold (D6)`);
+				log(
+					`[dsh-magic-context] token meter unavailable for session ${sessionId}; treating pressure as below the execute threshold (D6)`,
+				);
 			}
 			return this.bands;
 		}
 		const percentage = Math.min(100, (tokens / window) * 100);
-		return { percentage, execute: this.bands.execute, force: this.bands.force, refuse: this.bands.refuse };
+		return {
+			percentage,
+			execute: this.bands.execute,
+			force: this.bands.force,
+			refuse: this.bands.refuse,
+		};
 	}
 
 	/** Coarse lane for callers (T019): meter unavailable ⇒ "below-execute" (D6). */

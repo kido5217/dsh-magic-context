@@ -28,11 +28,16 @@ export interface MockReply {
 	/** Provider reasoning, streamed as `reasoning_content` deltas (thinking models). */
 	readonly thinking?: string;
 	/** Tool calls the assistant asks for; each gets a fresh call id. */
-	readonly toolCalls?: readonly { readonly name: string; readonly arguments: string }[];
+	readonly toolCalls?: readonly {
+		readonly name: string;
+		readonly arguments: string;
+	}[];
 	/** Finish reason (defaults to "stop" / "tool_calls"). */
 	readonly finishReason?: string;
 	/** Fail the request with this HTTP status instead of replying. */
 	readonly failStatus?: number;
+	/** Provider-reported prompt tokens, so a live gate can drive real pressure. */
+	readonly promptTokens?: number;
 }
 
 export interface MockRequest {
@@ -54,7 +59,10 @@ export interface MockProvider {
 
 const API_KEY = "mock-key";
 
-function sseChunk(choice: Record<string, unknown>, usage?: Record<string, unknown>): string {
+function sseChunk(
+	choice: Record<string, unknown>,
+	usage?: Record<string, unknown>,
+): string {
 	const payload: Record<string, unknown> = {
 		id: `chatcmpl-${randomUUID()}`,
 		object: "chat.completion.chunk",
@@ -77,19 +85,30 @@ export function startMockProvider(): MockProvider {
 		hostname: "127.0.0.1",
 		async fetch(request) {
 			const url = new URL(request.url);
-			const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+			const body = (await request.json().catch(() => ({}))) as Record<
+				string,
+				unknown
+			>;
 			requests.push({ path: url.pathname, body });
-			const reply = replies[Math.min(cursor, replies.length - 1)] ?? { text: "ok" };
+			const reply = replies[Math.min(cursor, replies.length - 1)] ?? {
+				text: "ok",
+			};
 			cursor += 1;
 			if (reply.failStatus !== undefined) {
-				return new Response(JSON.stringify({ error: { message: "mock provider failure", type: "mock" } }), {
-					status: reply.failStatus,
-					headers: { "content-type": "application/json" },
-				});
+				return new Response(
+					JSON.stringify({
+						error: { message: "mock provider failure", type: "mock" },
+					}),
+					{
+						status: reply.failStatus,
+						headers: { "content-type": "application/json" },
+					},
+				);
 			}
 			const stream = body["stream"] !== false;
 			const toolCalls = reply.toolCalls ?? [];
-			const finishReason = reply.finishReason ?? (toolCalls.length > 0 ? "tool_calls" : "stop");
+			const finishReason =
+				reply.finishReason ?? (toolCalls.length > 0 ? "tool_calls" : "stop");
 			if (!stream) {
 				return new Response(
 					JSON.stringify({
@@ -108,7 +127,10 @@ export function startMockProvider(): MockProvider {
 												tool_calls: toolCalls.map((call) => ({
 													id: `call_${randomUUID().replaceAll("-", "").slice(0, 12)}`,
 													type: "function",
-													function: { name: call.name, arguments: call.arguments },
+													function: {
+														name: call.name,
+														arguments: call.arguments,
+													},
 												})),
 											}
 										: {}),
@@ -121,12 +143,30 @@ export function startMockProvider(): MockProvider {
 				);
 			}
 			const parts: string[] = [];
-			parts.push(sseChunk({ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }));
+			parts.push(
+				sseChunk({
+					index: 0,
+					delta: { role: "assistant", content: "" },
+					finish_reason: null,
+				}),
+			);
 			if (reply.thinking !== undefined && reply.thinking.length > 0) {
-				parts.push(sseChunk({ index: 0, delta: { reasoning_content: reply.thinking }, finish_reason: null }));
+				parts.push(
+					sseChunk({
+						index: 0,
+						delta: { reasoning_content: reply.thinking },
+						finish_reason: null,
+					}),
+				);
 			}
 			if (reply.text !== undefined && reply.text.length > 0) {
-				parts.push(sseChunk({ index: 0, delta: { content: reply.text }, finish_reason: null }));
+				parts.push(
+					sseChunk({
+						index: 0,
+						delta: { content: reply.text },
+						finish_reason: null,
+					}),
+				);
 			}
 			toolCalls.forEach((call, index) => {
 				parts.push(
@@ -146,11 +186,17 @@ export function startMockProvider(): MockProvider {
 					}),
 				);
 			});
-			parts.push(sseChunk({ index: 0, delta: {}, finish_reason: finishReason }, {
-				prompt_tokens: 100,
-				completion_tokens: 10,
-				total_tokens: 110,
-			}));
+			const promptTokens = reply.promptTokens ?? 100;
+			parts.push(
+				sseChunk(
+					{ index: 0, delta: {}, finish_reason: finishReason },
+					{
+						prompt_tokens: promptTokens,
+						completion_tokens: 10,
+						total_tokens: promptTokens + 10,
+					},
+				),
+			);
 			parts.push("data: [DONE]\n\n");
 			return new Response(parts.join(""), {
 				headers: {
@@ -174,7 +220,9 @@ export function startMockProvider(): MockProvider {
 		messagesOf(index = 0) {
 			const body = requests[index]?.body;
 			const messages = body?.["messages"];
-			return Array.isArray(messages) ? (messages as Record<string, unknown>[]) : [];
+			return Array.isArray(messages)
+				? (messages as Record<string, unknown>[])
+				: [];
 		},
 		stop() {
 			server.stop(true);

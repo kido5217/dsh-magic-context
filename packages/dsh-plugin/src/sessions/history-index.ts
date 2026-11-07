@@ -17,8 +17,8 @@ import {
 	scheduleIncrementalIndex,
 	scheduleReconciliation,
 } from "@magic-context/core/features/magic-context/message-index-async";
-import { log } from "@magic-context/core/shared/logger";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import { log } from "@magic-context/core/shared/logger";
 import type { DshLogProjection } from "../surface/dsh-session-log.js";
 
 /** Highest projected ordinal already scheduled for incremental indexing. */
@@ -53,7 +53,10 @@ export function indexDshSessionHistory(
 			if (message.ordinal <= watermark) continue;
 			scheduleIncrementalIndex(db, mcSession, message.id, { ...message });
 		}
-		const highest = messages.reduce((max, message) => Math.max(max, message.ordinal), 0);
+		const highest = messages.reduce(
+			(max, message) => Math.max(max, message.ordinal),
+			0,
+		);
 		if (highest > watermark) indexedWatermarks.set(mcSession, highest);
 	} catch (error) {
 		if (!failureLogged) {

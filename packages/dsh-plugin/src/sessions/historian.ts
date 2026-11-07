@@ -23,19 +23,22 @@
  * enabling memory promotion later can't miss the gate.
  */
 import { randomUUID } from "node:crypto";
-import { appendCompartments, getCompartments, getLastCompartmentEndMessage } from "@magic-context/core/features/magic-context/compartment-storage";
-import { executeFlush } from "@magic-context/core/hooks/magic-context/execute-flush";
-import { sessionLog } from "@magic-context/core/shared/logger";
-import { log } from "@magic-context/core/shared/logger";
-import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
+import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
+import {
+	appendCompartments,
+	getCompartments,
+	getLastCompartmentEndMessage,
+} from "@magic-context/core/features/magic-context/compartment-storage";
+import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import { executeFlush } from "@magic-context/core/hooks/magic-context/execute-flush";
+import { log, sessionLog } from "@magic-context/core/shared/logger";
 import type { DshHost, DshSession } from "../host.js";
-import type { ManagedEdits, ShadowInfo } from "../surface/managed-edits.js";
-import type { HeadManager } from "../surface/head.js";
-import type { DshLogProjection } from "../surface/dsh-session-log.js";
 import { splitProtectedTail } from "../surface/apply-operations.js";
+import type { DshLogProjection } from "../surface/dsh-session-log.js";
 import { isAdapterSurfaceId } from "../surface/dsh-session-log.js";
+import type { HeadManager } from "../surface/head.js";
+import type { ManagedEdits, ShadowInfo } from "../surface/managed-edits.js";
 import type { McRoleRules } from "./subagent-rules.js";
 
 const HISTORIAN_SYSTEM_PROMPT =
@@ -91,48 +94,84 @@ export class Historian {
 		// Real conversation folds; adapter nodes ([dropped §N§] clusters, the
 		// head) are derived artifacts: never summarized again, but subsumed by
 		// the fold once coverage passes them (the store holds their truth).
-		const candidates = projection.records.filter((record) => record.seq > coveredThrough && !isAdapterSurfaceId(record.messageId));
-		const adapterSeqs = projection.records.filter((record) => isAdapterSurfaceId(record.messageId)).map((record) => record.seq);
-		const { eligible } = splitProtectedTail(candidates, request.protectedTailTokens);
+		const candidates = projection.records.filter(
+			(record) =>
+				record.seq > coveredThrough && !isAdapterSurfaceId(record.messageId),
+		);
+		const adapterSeqs = projection.records
+			.filter((record) => isAdapterSurfaceId(record.messageId))
+			.map((record) => record.seq);
+		const { eligible } = splitProtectedTail(
+			candidates,
+			request.protectedTailTokens,
+		);
 		if (eligible.length === 0) return null;
 		if (this.route === undefined) {
 			if (!this.loggedMissingRoute) {
 				this.loggedMissingRoute = true;
-				log("[dsh-magic-context] no historian route configured; folds deferred (pressure will keep refusing at the wall)");
+				log(
+					"[dsh-magic-context] no historian route configured; folds deferred (pressure will keep refusing at the wall)",
+				);
 			}
 			return null;
 		}
 
-		const summary = await this.summarize(eligible.map((record) => `[${String(record.seq)}] ${record.role}: ${record.text}`).join("\n"));
+		const summary = await this.summarize(
+			eligible
+				.map(
+					(record) => `[${String(record.seq)}] ${record.role}: ${record.text}`,
+				)
+				.join("\n"),
+		);
 		if (summary === null) return null;
 
 		const fromSeq = eligible[0]!.seq;
 		const toSeq = eligible[eligible.length - 1]!.seq;
 		const head = this.head.peek(mcSession);
-		const coveredSet = new Set<number>([...eligible.map((record) => record.seq), ...adapterSeqs, ...(head !== undefined ? [head.seq] : [])]);
-		const coveredSeqs = projection.records.filter((record) => coveredSet.has(record.seq)).map((record) => record.seq);
+		const coveredSet = new Set<number>([
+			...eligible.map((record) => record.seq),
+			...adapterSeqs,
+			...(head !== undefined ? [head.seq] : []),
+		]);
+		const coveredSeqs = projection.records
+			.filter((record) => coveredSet.has(record.seq))
+			.map((record) => record.seq);
 		const changeId = `mc-fold-${randomUUID()}`;
 		const sequence = getCompartments(this.db, mcSession).length + 1;
-		const shadow = await this.managedEdits.runManagedChange("fold", changeId, mcSession, {
-			decision: async () => {
-				appendCompartments(this.db, mcSession, [
-					{
-						sequence,
-						startMessage: fromSeq,
-						endMessage: toSeq,
-						startMessageId: eligible[0]!.messageId,
-						endMessageId: eligible[eligible.length - 1]!.messageId,
-						title: `Session history ${String(fromSeq)}–${String(toSeq)}`,
-						content: summary,
-					},
-				]);
-				// Drops queued for messages the fold now covers are settled by
-				// the fold itself: drain the queue through the core flush path.
-				executeFlush(this.db, mcSession);
-				return { fromSeq, toSeq };
+		const shadow = await this.managedEdits.runManagedChange(
+			"fold",
+			changeId,
+			mcSession,
+			{
+				decision: async () => {
+					appendCompartments(this.db, mcSession, [
+						{
+							sequence,
+							startMessage: fromSeq,
+							endMessage: toSeq,
+							startMessageId: eligible[0]!.messageId,
+							endMessageId: eligible[eligible.length - 1]!.messageId,
+							title: `Session history ${String(fromSeq)}–${String(toSeq)}`,
+							content: summary,
+						},
+					]);
+					// Drops queued for messages the fold now covers are settled by
+					// the fold itself: drain the queue through the core flush path.
+					executeFlush(this.db, mcSession);
+					return { fromSeq, toSeq };
+				},
+				effect: () =>
+					this.head.foldRebaselineEffect(
+						session,
+						{
+							mcSession,
+							subagent: request.subagent,
+							projection: request.projection,
+						},
+						coveredSeqs,
+					),
 			},
-			effect: () => this.head.foldRebaselineEffect(session, { mcSession, subagent: request.subagent, projection: request.projection }, coveredSeqs),
-		});
+		);
 		return { shadow, fromOrdinal: fromSeq, toOrdinal: toSeq };
 	}
 
@@ -143,16 +182,23 @@ export class Historian {
 			provider: route.provider,
 			model: route.model,
 			system: HISTORIAN_SYSTEM_PROMPT,
-			messages: [{ role: "user", content: [{ type: "text", text: transcript }] }],
+			messages: [
+				{ role: "user", content: [{ type: "text", text: transcript }] },
+			],
 			purpose: "magic-context",
-			...(this.config.historian?.maxTokens !== undefined ? { maxTokens: this.config.historian.maxTokens } : {}),
+			...(this.config.historian?.maxTokens !== undefined
+				? { maxTokens: this.config.historian.maxTokens }
+				: {}),
 		};
 		let text = "";
 		let finishedCleanly = false;
 		try {
-			for await (const chunk of this.host.llmStream(options) as AsyncIterable<StreamChunk>) {
+			for await (const chunk of this.host.llmStream(
+				options,
+			) as AsyncIterable<StreamChunk>) {
 				if (chunk.type === "text-delta") text += chunk.text;
-				else if (chunk.type === "finish") finishedCleanly = chunk.reason.kind === "stop";
+				else if (chunk.type === "finish")
+					finishedCleanly = chunk.reason.kind === "stop";
 			}
 		} catch (error) {
 			sessionLog("historian", "aux summary failed:", error);
