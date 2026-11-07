@@ -16,6 +16,7 @@
  * the baseline write and its cursors share one decision, so a crash between
  * the managed-change decision and its effect replays the same render.
  */
+
 import { buildMagicContextSection } from "@magic-context/core/agents/magic-context-prompt";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
@@ -27,6 +28,8 @@ import {
 	type M0SnapshotMarkers,
 	materializeM0,
 } from "@magic-context/core/hooks/magic-context/inject-compartments";
+import type { PromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
+import { maintenanceRunnable } from "../maintenance/index.js";
 import type { DshLogProjection } from "./dsh-session-log.js";
 import { type BaselineMural, resolveBaselineMural } from "./mural.js";
 import { syncProjectionTimes } from "./projection-times.js";
@@ -61,22 +64,31 @@ export class BaselineRenderer {
 		readonly db: ContextDatabase,
 		private readonly config: MagicContextConfig,
 		private readonly projectDir: string,
+		/** Shared prompt-surface runtime (per-model presets); absent ⇒ "full". */
+		private readonly promptSurface?: PromptSurfaceRuntime,
 	) {}
 
 	/** The Magic Context guidance block; the only adapter-authored bytes in the head. */
-	guidance(subagent: boolean): string {
+	guidance(subagent: boolean, modelKey?: string): string {
+		// F-07 family: the adapter contributes only plumbing — the same real
+		// flags, language and prompt surface the core arm resolves at
+		// `system-prompt-hash.ts`; nothing here is a DSH-side fork.
+		const surface = this.promptSurface?.resolveGuidance(
+			this.config.prompt_surface,
+			modelKey,
+		);
 		return buildMagicContextSection(
 			null,
 			0,
 			true,
-			false,
-			false,
-			false,
+			maintenanceRunnable(this.config),
+			this.config.temporal_awareness ?? true,
+			this.config.caveman_text_compression?.enabled === true,
 			subagent,
-			undefined,
+			this.config.language,
 			this.config.memory?.enabled ?? true,
-			"full",
-			undefined,
+			surface?.preset ?? "full",
+			surface?.primaryOverride,
 			this.config.smart_notes?.enabled ?? false,
 		);
 	}
@@ -148,7 +160,7 @@ export class BaselineRenderer {
 		} catch {
 			// Clearing a retired cache is best effort.
 		}
-		const guidance = this.guidance(context.subagent);
+		const guidance = this.guidance(context.subagent, context.modelKey);
 		return {
 			text: `${guidance}\n\n${result.m0Text}`,
 			m1Text: result.m1Text,

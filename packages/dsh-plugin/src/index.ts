@@ -275,6 +275,12 @@ export function mountAdapter(
 	// drops, head management, the historian fold and the pressure lanes, all
 	// mounted behind one pre-step listener. Sessions join the compaction claim
 	// at first attach (lanes.ts documents the choice).
+	const promptSurfaceRuntime = createPromptSurfaceRuntime({
+		harness: "dsh",
+		directory: process.cwd(),
+		warn: (message) => log(`[dsh-magic-context] prompt-surface: ${message}`),
+	});
+
 	const head = new HeadManager(
 		db,
 		managedEdits,
@@ -283,6 +289,7 @@ export function mountAdapter(
 		opts.historianRoute,
 		opts.attachments,
 		opts.modelKey,
+		promptSurfaceRuntime,
 	);
 	const historian = new Historian(
 		host,
@@ -333,11 +340,6 @@ export function mountAdapter(
 	// Same five for subagent sessions (FR-005); `sessionId()` resolves per call
 	// so one registration follows session switches. Gates mirror pi's boot-time
 	// registration; the core prompt surface is the sole description source.
-	const promptSurfaceRuntime = createPromptSurfaceRuntime({
-		harness: "dsh",
-		directory: process.cwd(),
-		warn: (message) => log(`[dsh-magic-context] prompt-surface: ${message}`),
-	});
 	registerEffect("ctx-tools", () => {
 		const disposeTools = registerMagicContextToolsDsh(host, {
 			db,
