@@ -176,6 +176,7 @@ export function mountAdapter(
 		head,
 		historian,
 		dropApplier,
+		managedEdits,
 		readSessionLog: opts.readSessionLog ?? (() => undefined),
 	});
 	registerEffect("pressure-lanes", () => {
