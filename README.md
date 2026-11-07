@@ -60,7 +60,7 @@ Run one session per project and keep it going for weeks, months, or years. It re
 npx @cortexkit/magic-context@latest setup
 ```
 
-Auto-detects which harnesses you have installed (OpenCode, Pi, OMP, or any combination) and configures each one: it registers the plugin, turns off the host's built-in compaction, helps you pick models for the historian and dreamer, and resolves conflicts with other context-management plugins. Restart the harness afterwards to load Magic Context. Target a specific harness with `--harness opencode`, `--harness pi`, or `--harness omp`.
+Auto-detects which harnesses you have installed (OpenCode, Pi, OMP, DSH, or any combination) and configures each one: it registers the plugin, turns off the host's built-in compaction, helps you pick models for the historian and dreamer, and resolves conflicts with other context-management plugins. Restart the harness afterwards to load Magic Context. Target a specific harness with `--harness opencode`, `--harness pi`, `--harness omp`, or `--harness dsh` (DSH also needs `--profile`).
 
 > **Why disable built-in compaction?** Magic Context manages context itself. The host's compaction would interfere with its cache-aware deferred operations and double-compress.
 
@@ -122,7 +122,8 @@ per-harness **after** form for all new configuration.
     "omp": {
       "model": "opencode/provider-model-id",
       "thinking_level": "auto"
-    }
+    },
+    "dsh": { "model": "provider/model-id" }
   }
 }
 ```
@@ -139,7 +140,7 @@ User-level config is `~/.config/cortexkit/magic-context.jsonc` on macOS/Linux an
 
 **Troubleshooting:** `npx @cortexkit/magic-context@latest doctor` auto-detects your harnesses, checks host-specific conflicts, verifies plugin registration and database integrity, and fixes what it can. Add `--issue` to file a ready-to-submit bug report.
 
-Works the same on a brand-new or a long-running project: install, restart the harness, and Magic Context captures context from that point forward. It does not backfill OpenCode, Pi, or OMP sessions from before it was installed.
+Works the same on a brand-new or a long-running project: install, restart the harness, and Magic Context captures context from that point forward. It does not backfill OpenCode, Pi, OMP, or DSH sessions from before it was installed.
 
 <details>
 <summary><strong>Compatibility with other context-management plugins</strong></summary>

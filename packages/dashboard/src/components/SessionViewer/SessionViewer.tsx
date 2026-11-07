@@ -1860,7 +1860,11 @@ export default function SessionViewer(props: SessionViewerProps = {}) {
                       <td>{sessionDetail()?.historian_runs ?? 0}</td>
                     </tr>
                     <Show
-                      when={sessionDetail()?.harness !== "pi" && sessionDetail()?.harness !== "omp"}
+                      when={
+                        sessionDetail()?.harness !== "pi" &&
+                        sessionDetail()?.harness !== "omp" &&
+                        sessionDetail()?.harness !== "dsh"
+                      }
                     >
                       <tr>
                         <td>Subagent</td>

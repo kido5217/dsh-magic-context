@@ -38,6 +38,9 @@ rust-embed = "8"
 getrandom = "0.2"
 open = "5"
 sha2 = "0.10"
+# DSH session logs persist as zstd frames (see src/dsh_sessions.rs). The C
+# build this pulls in is the same one rusqlite's bundled SQLite already needs.
+zstd = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

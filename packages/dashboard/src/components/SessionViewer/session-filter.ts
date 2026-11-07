@@ -8,6 +8,7 @@ export const sessionHarnessOptions: { value: HarnessFilter; label: string }[] = 
   { value: "opencode2", label: "OpenCode 2" },
   { value: "pi", label: "Pi" },
   { value: "omp", label: "OMP" },
+  { value: "dsh", label: "DSH" },
 ];
 
 /** The saved harness filter, or "all" when nothing (or an unknown value) is saved. */

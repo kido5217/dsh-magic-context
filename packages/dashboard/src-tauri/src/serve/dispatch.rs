@@ -884,4 +884,28 @@ mod tests {
         .expect_err("extra args rejected");
         assert!(matches!(err, DispatchError::BadArgs(_)));
     }
+
+    #[tokio::test]
+    async fn dispatch_session_detail_routes_dsh_harness_to_the_log_reader() {
+        let home = tempdir().expect("empty dsh home");
+        std::fs::create_dir_all(home.path().join("sessions")).expect("sessions dir");
+        let mut env = crate::test_env::EnvGuard::new();
+        env.set("DSH_HOME", home.path());
+        crate::dsh_sessions::clear_caches_for_tests();
+        // The wire string must parse and reach the reader: the failure is
+        // the reader's "session not found", not an argument or unknown
+        // harness error.
+        let err = dispatch(
+            &state_without_db(),
+            "get_session_detail",
+            serde_json::json!({ "harness": "dsh", "sessionId": "session-absent" }),
+        )
+        .await
+        .expect_err("unknown dsh session");
+        assert!(
+            matches!(&err, DispatchError::Command(message) if message.contains("session not found")),
+            "dsh must reach the reader, got {err:?}"
+        );
+        crate::dsh_sessions::clear_caches_for_tests();
+    }
 }
