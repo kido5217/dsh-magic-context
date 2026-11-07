@@ -29,16 +29,30 @@ import {
 } from "@deepseek-ai/dsh-compaction";
 import { log } from "@magic-context/core/shared/logger";
 
+/** Extra facts a manual fold needs beyond the span (T072). */
+export interface McFoldMeta {
+	/** Command identity to correlate into the durable checkpoint. */
+	readonly sourceCommandId?: string;
+}
+
 /** One MC fold over a managed session; `region` absent ⇒ fold the default head range. */
 export type McFoldCallback = (
 	agent: CompactionAgentContext,
 	region: { start: number; end: number } | undefined,
 	signal: AbortSignal | undefined,
+	meta?: McFoldMeta,
 ) => Promise<CompactionResult | null>;
 
-/** Set of sessions whose compaction is claimed while attached/detached. */
+/**
+ * Set of sessions whose compaction is claimed while attached/detached, plus
+ * the ONE fold-in-flight guard (T072): the `/compact` path and the command
+ * path (`/ctx-recomp`, `/ctx-wrapup` through `PressureLanes.manualFold`)
+ * serialize on this set, so a manual fold and a pre-step pass can never fold
+ * the same session concurrently.
+ */
 export class CompactionClaimRegistry {
 	private readonly managed = new Set<string>();
+	private readonly foldsInFlight = new Set<string>();
 
 	attach(sessionId: string): void {
 		this.managed.add(sessionId);
@@ -52,8 +66,24 @@ export class CompactionClaimRegistry {
 		return this.managed.has(sessionId);
 	}
 
+	/** Take the fold slot; false when a fold already runs for the session. */
+	beginFold(sessionId: string): boolean {
+		if (this.foldsInFlight.has(sessionId)) return false;
+		this.foldsInFlight.add(sessionId);
+		return true;
+	}
+
+	endFold(sessionId: string): void {
+		this.foldsInFlight.delete(sessionId);
+	}
+
+	foldInFlight(sessionId: string): boolean {
+		return this.foldsInFlight.has(sessionId);
+	}
+
 	clear(): void {
 		this.managed.clear();
+		this.foldsInFlight.clear();
 	}
 }
 
@@ -83,11 +113,16 @@ export class McCompactionClaim extends CompactionEngine {
 	override compactNow(
 		agent: ManualCompactAgentContext,
 		signal: AbortSignal,
-		_sourceCommandId?: unknown,
+		sourceCommandId?: unknown,
 	): Promise<CompactionResult | null> {
 		if (!this.registry.isManaged(agent.session.id))
 			return Promise.resolve(null);
-		return this.fold(agent, undefined, signal);
+		return this.fold(
+			agent,
+			undefined,
+			signal,
+			typeof sourceCommandId === "string" ? { sourceCommandId } : undefined,
+		);
 	}
 
 	override async compactRegion(

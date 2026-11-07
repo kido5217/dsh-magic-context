@@ -21,6 +21,7 @@ import type {
 	DshHost,
 	DshSession,
 	DshSessionHeaderFacts,
+	McCheckpointSource,
 	PostToolInfo,
 	PostToolVerdict,
 	PreStepDecision,
@@ -44,6 +45,8 @@ export interface FakeSurfaceEdit {
 	readonly endSeq: number;
 	readonly shadowedSeqs: readonly number[];
 	readonly content: McReplacementContent;
+	/** Checkpoint identity when the replace was a compaction replacement (T072). */
+	readonly checkpoint?: McCheckpointSource;
 }
 
 /** Plain text of replacement/notice content blocks (text blocks joined). */
@@ -159,6 +162,7 @@ export class FakeSession implements DshSession {
 		startSeq: number,
 		endSeq: number,
 		shadowedSeqs: readonly number[],
+		options?: { readonly checkpoint?: McCheckpointSource },
 	): Promise<{ replacementSeq: number }> {
 		if (shadowedSeqs.length === 0)
 			throw new Error("replace requires at least one shadowed node");
@@ -186,6 +190,9 @@ export class FakeSession implements DshSession {
 			endSeq,
 			shadowedSeqs,
 			content: replacement,
+			...(options?.checkpoint !== undefined
+				? { checkpoint: options.checkpoint }
+				: {}),
 		});
 		return { replacementSeq };
 	}

@@ -7,8 +7,9 @@
  * in-process against the real store in test/commands.test.ts; this gate
  * proves the live registration path end to end.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+
 import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createLiveHome, type LiveHome } from "./live-home.js";
 import {
 	MOCK_API_KEY_ENV,
@@ -27,9 +28,7 @@ afterAll(() => {
 const EVIDENCE = `${import.meta.dir}/../tmp/evidence/v6-commands`;
 
 describe("V6 live", () => {
-	test(
-		"a real boot registers the six ctx commands on the command runtime",
-		async () => {
+	test("a real boot registers the six ctx commands on the command runtime", async () => {
 		home = createLiveHome({
 			root: `${import.meta.dir}/../tmp/live-v6`,
 			route: {
@@ -48,7 +47,13 @@ describe("V6 live", () => {
 		expect(run.stderr).toContain(
 			"[dsh-magic-context] commands registered: ctx-status",
 		);
-		for (const name of ["ctx-flush", "ctx-embed", "ctx-recomp", "ctx-wrapup", "ctx-dream"])
+		for (const name of [
+			"ctx-flush",
+			"ctx-embed",
+			"ctx-recomp",
+			"ctx-wrapup",
+			"ctx-dream",
+		])
 			expect(run.stderr).toContain(name);
 		mkdirSync(EVIDENCE, { recursive: true });
 		writeFileSync(
@@ -66,5 +71,5 @@ describe("V6 live", () => {
 				2,
 			),
 		);
-		}, 90_000);
+	}, 90_000);
 });

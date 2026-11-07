@@ -62,7 +62,8 @@ export class DshSingleShotTransport implements HiddenCompletionExecutor {
 	constructor(private readonly host: SingleShotStreamHost) {}
 
 	async open(run: HiddenRunIdentity): Promise<HiddenRunHandle> {
-		const id = `mc-maint-ss-${String((this.seq += 1))}`;
+		this.seq += 1;
+		const id = `mc-maint-ss-${String(this.seq)}`;
 		this.runs.set(id, { identity: run });
 		return { id };
 	}

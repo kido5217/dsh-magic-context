@@ -161,8 +161,8 @@ export function buildStatusText(
 		...measured,
 	};
 	if (extras.dreamer !== undefined) {
-		source["lastDreamerRunAt"] = extras.dreamer.lastRunAt;
-		source["dreamerUnsupportedTasks"] = extras.dreamer.unsupportedTasks;
+		source.lastDreamerRunAt = extras.dreamer.lastRunAt;
+		source.dreamerUnsupportedTasks = extras.dreamer.unsupportedTasks;
 	}
 	const check = checkStatusViewSource(source);
 	if (!check.ok) {

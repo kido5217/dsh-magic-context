@@ -274,9 +274,11 @@ export class PressureLanes {
 		state: AttachedSession,
 		info: PreStepInfo,
 	): Promise<PreStepDecision> {
-		// A manual fold owns this session right now (T070): the managed pass
-		// stays out of the way; the next step runs it as usual.
-		if (this.manualFolds.has(session.id)) return "enter";
+		// A manual fold owns this session right now (T070/T072: one shared
+		// busy set on the compaction claim, consulted by every fold entry
+		// point). The managed pass stays out of the way; the next step runs
+		// it as usual.
+		if (this.deps.claim.foldInFlight(session.id)) return "enter";
 		const lane = this.deps.meter.lane(session.id); // fresh EVERY pass
 		const measured = this.deps.host.pressure(session.id);
 		// A route that already rejected one request is priced against what it
@@ -476,14 +478,13 @@ export class PressureLanes {
 		});
 	}
 
-	/** Sessions with a manual fold in flight (`/ctx-recomp`, `/ctx-wrapup`). */
-	private readonly manualFolds = new Set<string>();
-
 	/**
 	 * [T070] Manual fold entry: `/ctx-wrapup` folds the live raw tail keeping
 	 * the newest N raw messages; `/ctx-recomp` (`fullRebuild`) first wipes the
 	 * published compartments so the fold rebuilds coverage from message one.
-	 * The pre-step pass steps around a running manual fold (see `runPass`).
+	 * The pre-step pass steps around a running manual fold (see `runPass`),
+	 * and the busy slot is the compaction claim's (T072) — a `/compact` in
+	 * flight and a command fold serialize on the same guard.
 	 */
 	async manualFold(
 		dshSessionId: string,
@@ -497,10 +498,9 @@ export class PressureLanes {
 		if (state === undefined || session === undefined) {
 			return "Magic Context does not manage this session yet (no managed pass has run in it).";
 		}
-		if (this.manualFolds.has(dshSessionId)) {
+		if (!this.deps.claim.beginFold(dshSessionId)) {
 			return "A manual fold is already running for this session.";
 		}
-		this.manualFolds.add(dshSessionId);
 		try {
 			const projection = projectDshSessionLog(this.readRecords(dshSessionId));
 			if (opts.fullRebuild === true) {
@@ -540,7 +540,7 @@ export class PressureLanes {
 			}
 			return `Folded messages ${fold.fromOrdinal}-${fold.toOrdinal} into a compartment. The new history lands on the next step.`;
 		} finally {
-			this.manualFolds.delete(dshSessionId);
+			this.deps.claim.endFold(dshSessionId);
 		}
 	}
 

@@ -34,6 +34,7 @@ import {
 	McCompactionClaim,
 	type McFoldCallback,
 } from "./compaction-claim.js";
+import { createMcFold } from "./compaction-fold.js";
 import { loadDshConfig } from "./config/index.js";
 import type { DshHost } from "./host.js";
 import {
@@ -250,8 +251,15 @@ export function mountAdapter(
 	registerEffect("managed-edits", () => () => managedEdits.close());
 
 	// T011 — compaction claim (MC owns folding on managed sessions).
+	// T072 — the claim's manual entry is the real historian fold (compaction
+	// lifecycle + checkpoint + full CompactionResult), built below once the
+	// historian exists; the wrapper resolves the late binding at call time.
 	const compaction = new CompactionClaimRegistry();
-	const fold: McFoldCallback = opts.fold ?? (async () => null);
+	let mcFold: McFoldCallback | undefined = opts.fold;
+	const fold: McFoldCallback = (agent, region, signal, meta) =>
+		mcFold === undefined
+			? Promise.resolve(null)
+			: mcFold(agent, region, signal, meta);
 	registerEffect("compaction-claim", () => {
 		new McCompactionClaim(host.ctx, compaction, fold);
 		return () => {
@@ -285,6 +293,18 @@ export function mountAdapter(
 		opts.historianRoute,
 		opts.projectDir ?? process.cwd(),
 	);
+	// T072 — `/compact` folds for real: same fold core, host lifecycle
+	// events, and the shared busy slot on the claim (a pre-step pass and a
+	// manual fold never overlap on one session).
+	mcFold ??= createMcFold({
+		host,
+		db,
+		config,
+		claim: compaction,
+		mapping,
+		historian,
+		readSessionLog: opts.readSessionLog ?? (() => undefined),
+	});
 	const dropApplier = new DropApplier(db, managedEdits);
 	const lanes = new PressureLanes({
 		host,

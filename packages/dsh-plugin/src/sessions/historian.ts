@@ -31,6 +31,7 @@
  * (host-agnostic core-runner work; the ledger tracks it).
  */
 import { randomUUID } from "node:crypto";
+import { ManualCompactionError } from "@deepseek-ai/dsh-compaction";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import { insertCompartmentEvents } from "@magic-context/core/features/magic-context/compartment-events";
@@ -63,6 +64,7 @@ import type { DshHost, DshSession } from "../host.js";
 import { splitProtectedTail } from "../surface/apply-operations.js";
 import type { DshLogProjection } from "../surface/dsh-session-log.js";
 import { isAdapterSurfaceId } from "../surface/dsh-session-log.js";
+import type { McReplacementContent } from "../surface/events.js";
 import type { HeadManager } from "../surface/head.js";
 import type { ManagedEdits, ShadowInfo } from "../surface/managed-edits.js";
 import type { McRoleRules } from "./subagent-rules.js";
@@ -86,12 +88,43 @@ export interface FoldRequest {
 	readonly subagent: boolean;
 	/** Protected-tail budget in tokens (already band-adjusted by the caller). */
 	readonly protectedTailTokens: number;
+	/**
+	 * Manual region fold (T072): revalidate the requested inclusive surface-seq
+	 * span against the live surface and confine the fold window to it. Edges
+	 * gone (shadowed since selection) ⇒ a `changed` ManualCompactionError.
+	 */
+	readonly span?: { readonly start: number; readonly end: number };
+	/**
+	 * Manual compaction identity (T072): present ⇒ the fold emits the host's
+	 * durable compaction lifecycle (`compaction/start` before the managed
+	 * bracket, `compaction/summary` immediately before the replacement,
+	 * `compaction/end` after it) and stamps the replacement node with the
+	 * host's checkpoint source. The outcome carries the event seqs.
+	 */
+	readonly compaction?: {
+		readonly compactionId: string;
+		readonly sourceCommandId?: string;
+	};
+}
+
+/** Durable facts of a manual compaction fold (T072; feeds CompactionResult). */
+export interface FoldCompactionOutcome {
+	readonly compactionId: string;
+	readonly startSeq: number;
+	readonly summarySeq: number;
+	readonly endSeq: number;
+	readonly summary: McReplacementContent;
+	readonly shadowedRange: { readonly start: number; readonly end: number };
+	readonly shadowedSeqs: readonly number[];
+	readonly shadowedTokenCount: number;
 }
 
 export interface FoldOutcome {
 	readonly shadow: ShadowInfo;
 	readonly fromOrdinal: number;
 	readonly toOrdinal: number;
+	/** Present iff the request carried a compaction identity. */
+	readonly compaction?: FoldCompactionOutcome;
 }
 
 export class Historian {
@@ -121,13 +154,41 @@ export class Historian {
 	async fold(request: FoldRequest): Promise<FoldOutcome | null> {
 		const { session, mcSession, projection } = request;
 		const coveredThrough = getLastCompartmentEndMessage(this.db, mcSession);
+		if (request.span !== undefined) {
+			// Region revalidation (T072): the edges the caller selected must
+			// still be current surface nodes, or the decision raced something.
+			const surface = new Set(session.surfaceNodes());
+			if (!surface.has(request.span.start) || !surface.has(request.span.end)) {
+				throw new ManualCompactionError(
+					"changed",
+					`region ${String(request.span.start)}..${String(request.span.end)} no longer matches the current surface of session ${mcSession}`,
+				);
+			}
+		}
 		// Real conversation folds; adapter nodes ([dropped §N§] clusters, the
 		// head) are derived artifacts: never summarized again, but subsumed by
 		// the fold once coverage passes them (the store holds their truth).
-		const candidates = projection.records.filter(
+		let candidates = projection.records.filter(
 			(record) =>
 				record.seq > coveredThrough && !isAdapterSurfaceId(record.messageId),
 		);
+		if (request.span !== undefined) {
+			// The span names surface POSITIONS, not a numeric seq interval
+			// (`CompactionResult.shadowedRange` semantics: after a prior
+			// replace, visible seqs are non-monotonic). Slice the projection
+			// (which is in surface position order) between the two edges.
+			const positions = new Map(
+				projection.records.map((record, index) => [record.seq, index]),
+			);
+			const from = positions.get(request.span.start);
+			const to = positions.get(request.span.end);
+			const lo = Math.min(from ?? 0, to ?? 0);
+			const hi = Math.max(from ?? 0, to ?? 0);
+			const inside = new Set(
+				projection.records.slice(lo, hi + 1).map((record) => record.seq),
+			);
+			candidates = candidates.filter((record) => inside.has(record.seq));
+		}
 		const adapterSeqs = projection.records
 			.filter((record) => isAdapterSurfaceId(record.messageId))
 			.map((record) => record.seq);
@@ -190,6 +251,30 @@ export class Historian {
 		);
 		const projectIdentity =
 			resolveProjectIdentityForSession(this.projectDir) ?? "";
+		const compaction = request.compaction;
+		const coveredRecords = projection.records.filter((record) =>
+			coveredSeqs.includes(record.seq),
+		);
+		const shadowedTokenCount = coveredRecords.reduce(
+			(total, record) => total + Math.ceil((record.text?.length ?? 0) / 4),
+			0,
+		);
+		let compactionOutcome: FoldCompactionOutcome | undefined;
+		let compactionStartSeq = 0;
+		if (compaction !== undefined) {
+			compactionStartSeq = (
+				await session.appendCompactionEvent({
+					phase: "start",
+					data: {
+						compactionId: compaction.compactionId,
+						...(compaction.sourceCommandId !== undefined
+							? { sourceCommandId: compaction.sourceCommandId }
+							: {}),
+						turn: null,
+					},
+				})
+			).seq;
+		}
 		// Same gate stack as the core runner (Issue #44 parity), narrowed by the
 		// project's subagent rule set for this session's role.
 		const promotionActive =
@@ -329,19 +414,113 @@ export class Historian {
 					}
 					return { fromSeq, toSeq };
 				},
-				effect: () =>
-					this.head.foldRebaselineEffect(
-						session,
-						{
-							mcSession,
-							subagent: request.subagent,
-							projection: request.projection,
-						},
-						coveredSeqs,
-					),
+				effect: async () => {
+					if (compaction === undefined)
+						return this.head.foldRebaselineEffect(
+							session,
+							{
+								mcSession,
+								subagent: request.subagent,
+								projection: request.projection,
+							},
+							coveredSeqs,
+						);
+					// Host-mandated durable shape (T072): the summary event
+					// lands immediately before the replacement it prices, and
+					// the replacement carries the host's checkpoint source.
+					const summaryBlocks: McReplacementContent = [
+						{ type: "text", text: raw },
+					];
+					const route = this.route as HistorianRoute;
+					const summarySeq = (
+						await session.appendCompactionEvent({
+							phase: "summary",
+							data: {
+								compactionId: compaction.compactionId,
+								...(compaction.sourceCommandId !== undefined
+									? { sourceCommandId: compaction.sourceCommandId }
+									: {}),
+								summary: summaryBlocks,
+								shadowedRange: {
+									start: coveredSeqs[0]!,
+									end: coveredSeqs[coveredSeqs.length - 1]!,
+								},
+								shadowedSeqs: coveredSeqs,
+								shadowedTokenCount,
+								provider: route.provider,
+								model: route.model,
+								...(this.config.historian?.maxTokens !== undefined
+									? { maxTokens: this.config.historian.maxTokens }
+									: {}),
+								rawOutput: summaryBlocks,
+								llmStreamCall: true,
+							},
+						})
+					).seq;
+					try {
+						const foldShadow = await this.head.foldRebaselineEffect(
+							session,
+							{
+								mcSession,
+								subagent: request.subagent,
+								projection: request.projection,
+							},
+							coveredSeqs,
+							compaction,
+						);
+						const endSeq = (
+							await session.appendCompactionEvent({
+								phase: "end",
+								data: {
+									compactionId: compaction.compactionId,
+									...(compaction.sourceCommandId !== undefined
+										? { sourceCommandId: compaction.sourceCommandId }
+										: {}),
+									turn: null,
+								},
+							})
+						).seq;
+						compactionOutcome = {
+							compactionId: compaction.compactionId,
+							startSeq: compactionStartSeq,
+							summarySeq,
+							endSeq,
+							summary: summaryBlocks,
+							shadowedRange: {
+								start: coveredSeqs[0]!,
+								end: coveredSeqs[coveredSeqs.length - 1]!,
+							},
+							shadowedSeqs: coveredSeqs,
+							shadowedTokenCount,
+						};
+						return foldShadow;
+					} catch (error) {
+						// Fail-closed: the lifecycle pair stays balanced even
+						// when the surface effect refused.
+						await session.appendCompactionEvent({
+							phase: "end",
+							data: {
+								compactionId: compaction.compactionId,
+								...(compaction.sourceCommandId !== undefined
+									? { sourceCommandId: compaction.sourceCommandId }
+									: {}),
+								turn: null,
+								error: error instanceof Error ? error.message : String(error),
+							},
+						});
+						throw error;
+					}
+				},
 			},
 		);
-		return { shadow, fromOrdinal: fromSeq, toOrdinal: toSeq };
+		return {
+			shadow,
+			fromOrdinal: fromSeq,
+			toOrdinal: toSeq,
+			...(compactionOutcome !== undefined
+				? { compaction: compactionOutcome }
+				: {}),
+		};
 	}
 
 	/**

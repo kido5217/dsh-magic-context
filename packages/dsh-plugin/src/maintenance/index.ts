@@ -83,8 +83,8 @@ export interface MaintenanceHandle {
 /** DSH session root: `$DSH_HOME/sessions` (crash residue reaped at boot). */
 function maintenanceSessionRoot(): string {
 	const home =
-		process.env["DSH_HOME"] && process.env["DSH_HOME"].length > 0
-			? process.env["DSH_HOME"]
+		process.env.DSH_HOME && process.env.DSH_HOME.length > 0
+			? process.env.DSH_HOME
 			: join(homedir(), ".dsh");
 	return join(home, "sessions");
 }
@@ -102,8 +102,8 @@ export function maintenanceRunnable(config: {
 }): boolean {
 	const dreamer = config.dreamer;
 	if (!dreamer) return false;
-	if (dreamer["enabled"] === false) return false;
-	return dreamer["dsh"] !== undefined || dreamer["pi"] !== undefined;
+	if (dreamer.enabled === false) return false;
+	return dreamer.dsh !== undefined || dreamer.pi !== undefined;
 }
 
 export function startMaintenance(
