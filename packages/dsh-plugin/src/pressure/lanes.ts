@@ -47,13 +47,16 @@ import type {
 import { runLanePass } from "../lanes/engine.js";
 import { LaneGates, rebuildPermission } from "../lanes/gating.js";
 import { injectionStripLane } from "../lanes/heuristics.js";
+import { supersessionLane } from "../lanes/reclaim.js";
 import type { Historian } from "../sessions/historian.js";
 import { indexDshSessionHistory } from "../sessions/history-index.js";
 import type { SessionMapping } from "../sessions/mapping.js";
 import { type McRoleRules, rulesForRole } from "../sessions/subagent-rules.js";
+import { indexToolCalls } from "../sessions/tool-identity.js";
 import {
 	type DropApplier,
 	protectedTailBudget,
+	splitProtectedTail,
 } from "../surface/apply-operations.js";
 import {
 	type DshLogProjection,
@@ -243,7 +246,16 @@ export class PressureLanes {
 			band: lane,
 			permission,
 			config: this.deps.config,
-			lanes: [injectionStripLane],
+			db: this.deps.db,
+			protectedMessageIds: new Set(
+				splitProtectedTail(
+					projection.records.filter(
+						(record) => !isAdapterSurfaceId(record.messageId),
+					),
+					budget,
+				).protectedTail.map((record) => record.messageId),
+			),
+			lanes: [injectionStripLane, supersessionLane],
 			gates: this.gates,
 		});
 		if (lanePass.changed) changed = true;

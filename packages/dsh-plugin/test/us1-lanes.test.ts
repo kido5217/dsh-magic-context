@@ -12,6 +12,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
 import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
@@ -34,6 +35,7 @@ afterAll(async () => {
 	await closeDatabase();
 });
 
+const cfg = MagicContextConfigSchema.parse({});
 const PRIMARY = rulesForRole("primary");
 const SUBAGENT = rulesForRole("subagent");
 const INJECTED = "real question\n<system-reminder>stale harness note</system-reminder>\nmore text";
@@ -120,7 +122,9 @@ describe("injection-strip lane", () => {
 			rules: PRIMARY,
 			band: "execute",
 			permission: { permitted: true, reason: "scheduler" },
-			config: {},
+			config: cfg,
+			db,
+			protectedMessageIds: new Set(),
 		});
 		expect(requests.map((request) => request.messageId).sort()).toEqual(["a-inj", "u-inj"]);
 		// The stripped bytes are the core stripper's, not a local approximation.
@@ -141,7 +145,9 @@ describe("injection-strip lane", () => {
 				rules: PRIMARY,
 				band: "execute",
 				permission: { permitted: true, reason: "scheduler" },
-				config: {},
+				config: cfg,
+			db,
+			protectedMessageIds: new Set(),
 				lanes: [injectionStripLane],
 				gates: new LaneGates(),
 			});
@@ -187,7 +193,9 @@ describe("lane engine containment", () => {
 			rules: PRIMARY,
 			band: "execute",
 			permission: { permitted: true, reason: "scheduler" },
-			config: {},
+			config: cfg,
+			db,
+			protectedMessageIds: new Set(),
 			lanes: [exploding, injectionStripLane],
 			gates: new LaneGates(),
 		});
@@ -217,7 +225,9 @@ describe("lane engine containment", () => {
 			rules: PRIMARY,
 			band: "execute",
 			permission: { permitted: true, reason: "scheduler" },
-			config: {},
+			config: cfg,
+			db,
+			protectedMessageIds: new Set(),
 			lanes: [injectionStripLane],
 			gates: new LaneGates(),
 		});
@@ -243,7 +253,9 @@ describe("lane engine containment", () => {
 			rules: PRIMARY,
 			band: "execute",
 			permission: { permitted: true, reason: "scheduler" },
-			config: {},
+			config: cfg,
+			db,
+			protectedMessageIds: new Set(),
 			lanes: [injectionStripLane],
 			gates: new LaneGates(),
 		});

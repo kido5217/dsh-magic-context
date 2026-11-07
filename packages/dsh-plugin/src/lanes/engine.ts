@@ -27,6 +27,8 @@
  * supplies the episode policy.
  */
 import { randomUUID } from "node:crypto";
+import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
+import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { log } from "@magic-context/core/shared/logger";
 import type { DshSession } from "../host.js";
 import type { McRoleRules } from "../sessions/subagent-rules.js";
@@ -57,7 +59,11 @@ export interface LaneContext {
 	readonly rules: McRoleRules;
 	readonly band: PressureLane;
 	readonly permission: RebuildPermission;
-	readonly config: unknown;
+	readonly config: MagicContextConfig;
+	/** Store handle for selectors that read tag/pending state. */
+	readonly db: ContextDatabase;
+	/** Message ids in the verbatim protected tail (never reclaim targets). */
+	readonly protectedMessageIds: ReadonlySet<string>;
 }
 
 /** A selector's answer for one pass. */
@@ -97,7 +103,9 @@ export interface LanePassRequest {
 	readonly rules: McRoleRules;
 	readonly band: PressureLane;
 	readonly permission: RebuildPermission;
-	readonly config: unknown;
+	readonly config: MagicContextConfig;
+	readonly db: ContextDatabase;
+	readonly protectedMessageIds?: ReadonlySet<string>;
 	readonly lanes: readonly Lane[];
 	readonly gates: LaneGates;
 }
@@ -121,6 +129,8 @@ export async function runLanePass(
 		band: request.band,
 		permission: request.permission,
 		config: request.config,
+		db: request.db,
+		protectedMessageIds: request.protectedMessageIds ?? new Set<string>(),
 	};
 	const outcomes: LaneOutcome[] = [];
 	let changed = false;

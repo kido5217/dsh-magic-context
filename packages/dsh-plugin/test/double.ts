@@ -85,8 +85,8 @@ export class FakeSession implements DshSession {
 	}
 
 	/** Seed durable content for a surface seq (durable-log projection source). */
-	seedMessage(seq: number, messageId: string, text: string, role = "user"): void {
-		this.records.set(seq, { seq, messageId, role, text, createdAt: seq });
+	seedMessage(seq: number, messageId: string, text: string, role = "user", extra?: Partial<DshLogMessageRecord>): void {
+		this.records.set(seq, { seq, messageId, role, text, createdAt: seq, ...extra });
 	}
 
 	/** Append a new durable user/assistant turn (simulates a new host turn). */
