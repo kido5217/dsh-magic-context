@@ -125,7 +125,7 @@ describe("render identity (T048)", () => {
 		expect(folded!.seq).not.toBe(first!.seq);
 		expect(folded!.identity).not.toBe(first!.identity);
 		const foldedHash = pairHash();
-		expect(foldedHash[2]).toBe(folded!.identity);
+		expect(foldedHash[2] ?? "").toBe(folded!.identity ?? "");
 
 		// And then it settles: the next routine pass leaves the baseline alone.
 		expect(

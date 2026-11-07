@@ -94,6 +94,10 @@ export class BaselineRenderer {
 			...(modelKey !== undefined && modelKey !== "" ? { modelKey } : {}),
 			state: getOrCreateSessionMeta(this.db, mcSession),
 			projectPath: resolveProjectIdentityForSession(this.projectDir),
+			// The workspace directory itself: `<project-docs>` reads
+			// ARCHITECTURE.md/STRUCTURE.md from disk and the docs hash rides
+			// the snapshot markers. Without it the docs block never renders.
+			projectDirectory: this.projectDir,
 			injectDocs: this.config.dreamer?.inject_docs !== false,
 			memoryEnabled,
 			...(this.config.memory?.injection_budget_tokens !== undefined
