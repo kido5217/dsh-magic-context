@@ -64,6 +64,10 @@ export class SessionMapping {
 				? { parentDshSessionId: header.parentSession }
 				: {}),
 		};
+		// Delete-then-set keeps insertion order == most-recently-attached (Map
+		// preserves an existing key's position on re-set), which is what
+		// lastAttached() documents (N-15 nit, made true here).
+		this.mappings.delete(header.id);
 		this.mappings.set(header.id, mapping);
 		return mapping;
 	}

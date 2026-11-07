@@ -342,6 +342,23 @@ export function mountAdapter(
 		};
 	});
 
+	// N-06 — resident-host lifecycle: DSH emits `agent/disposed` when a
+	// session's agent leaves the registry. Everything keyed by session id is
+	// released there, or `dsh web` grows without bound (the cached surface
+	// snapshot in the log source is pruned inside host-cordis itself).
+	registerEffect("session-close-pruning", () =>
+		host.onSessionClosed?.((sessionId) => {
+			lanes.detach(sessionId);
+			compaction.detach(sessionId);
+			mapping.remove(sessionId);
+			meter.forget(sessionId);
+			head.forget(sessionId);
+			managedEdits.forget(sessionId);
+			overflowLedger.detach(sessionId);
+			overflowGate.reset(sessionId);
+		}) ?? (() => undefined),
+	);
+
 	// [T031 tools] the five ctx_* tools register here via host.registerTool.
 	// Same five for subagent sessions (FR-005); `sessionId()` resolves per call
 	// so one registration follows session switches. Gates mirror pi's boot-time

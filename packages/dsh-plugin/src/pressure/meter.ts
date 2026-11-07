@@ -105,6 +105,11 @@ export class PressureMeter {
 		};
 	}
 
+	/** N-06: release per-session memory when the session closes. */
+	forget(sessionId: string): void {
+		this.loggedUnavailable.delete(sessionId);
+	}
+
 	/** Coarse lane for callers (T019): meter unavailable ⇒ "below-execute" (D6). */
 	lane(sessionId: string): "below-execute" | "execute" | "force" | "refuse" {
 		const { percentage, execute, force, refuse } = this.read(sessionId);

@@ -166,6 +166,8 @@ export class PressureLanes {
 		this.attachedSessions.get(sessionId)?.unregisterProvider();
 		this.attachedSessions.delete(sessionId);
 		this.gates.detach(sessionId);
+		// N-06: the refusal episode is session state too.
+		this.refusalEpisode.delete(sessionId);
 	}
 
 	detachAll(): void {

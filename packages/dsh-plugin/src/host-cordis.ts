@@ -360,6 +360,10 @@ export function createCordisHost(
 	// the refusal blocks the very request that would refresh the reading
 	// (spec Edge Cases — model switch; observed live on 0.2.2-rc.1).
 	const routedWindows = new Map<string, number>();
+	// N-06: route observations die with the session even without a consumer.
+	ctx.on("agent/disposed", (payload) => {
+		routedWindows.delete(payload.agent.session.id);
+	});
 	return {
 		ctx,
 		getSession,
@@ -476,6 +480,15 @@ export function createCordisHost(
 				})(),
 			);
 		},
+		onSessionClosed(handler: (sessionId: string) => void): () => void {
+			// N-06: `agent/disposed` is DSH's session-close signal — the agent
+			// left the registry (host runtime-types: emitted after driver
+			// quiescence and scoped-registration unwind). One session, one
+			// agent: this is when its resident state may go.
+			return ctx.on("agent/disposed", (payload) => {
+				handler(payload.agent.session.id);
+			});
+		},
 		onRequestError(
 			listener: (info: RequestErrorInfo) => boolean | Promise<boolean>,
 		): () => void {
@@ -566,6 +579,14 @@ export function createCordisSessionLogSource(
 ): CordisSessionLogSource {
 	const cache = new Map<string, readonly DshLogMessageRecord[]>();
 	const todos = new Map<string, TodoState>();
+	// N-06: the cached surface snapshot (full record bodies) is the dominant
+	// resident-host growth item; it must not outlive the session. Entries are
+	// re-read from the host on the next prefetch, so this is pure release.
+	ctx.on("agent/disposed", (payload) => {
+		const sessionId = payload.agent.session.id;
+		cache.delete(sessionId);
+		todos.delete(sessionId);
+	});
 	return {
 		read: (dshSessionId) => cache.get(dshSessionId),
 		async prefetch(dshSessionId: string): Promise<void> {

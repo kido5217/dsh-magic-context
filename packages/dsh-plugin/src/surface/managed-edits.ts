@@ -76,6 +76,16 @@ export class ManagedEdits {
 	constructor(private readonly host: DshHost) {}
 
 	/**
+	 * N-06: release the serialization chain of a closed session. Unapplied
+	 * brackets are NOT lost: the durable bracket rows are re-discovered and
+	 * replayed by the next attach (the pending map is a cache, the store is
+	 * the source of truth).
+	 */
+	forget(sessionId: string): void {
+		this.chains.delete(sessionId);
+	}
+
+	/**
 	 * Run one managed change: bracket, decision, effect, close. Queues behind
 	 * any other managed change on the same session (one lock bracket at a
 	 * time). Rejects with `StoreUnavailableError` when the decision fails;
