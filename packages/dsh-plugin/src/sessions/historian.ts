@@ -131,7 +131,13 @@ export class Historian {
 		const coveredSet = new Set<number>([
 			...eligible.map((record) => record.seq),
 			...adapterSeqs,
-			...(head !== undefined ? [head.seq] : []),
+			// The fold consumes BOTH head nodes: the new baseline replaces them
+			// (the delta is the fold's own output position for new bytes).
+			...(head !== undefined
+				? head.deltaSeq === undefined
+					? [head.seq]
+					: [head.seq, head.deltaSeq]
+				: []),
 		]);
 		const coveredSeqs = projection.records
 			.filter((record) => coveredSet.has(record.seq))

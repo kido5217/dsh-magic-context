@@ -61,11 +61,7 @@ describe("V2 live", () => {
 				(body["messages"] as { role?: string; content?: unknown }[]) ?? [];
 			const raw = JSON.stringify(body);
 			// The historian's aux call quotes the child transcript, so it must
-			// be answered first or it would look like another child step. The
-			// summary carries the marker phrase on purpose: after the fold the
-			// child's original prompt is gone from the surface, and the fold
-			// head (a USER node rendering this content) is what identifies the
-			// child's LATER requests.
+			// be answered first or it would look like another child step.
 			if (raw.includes("Magic Context historian")) {
 				seen.historian += 1;
 				return {
@@ -73,20 +69,27 @@ describe("V2 live", () => {
 					promptTokens: 500,
 				};
 			}
-			// Once the fold head is in the served history the child must WRAP
-			// UP: another tool call would just hand the fold another eligible
-			// window on the next pass and the child would never finish.
-			const folded = raw.includes("folded child history");
+			// After the fold the child's original prompt is gone from the
+			// surface: what identifies the child's LATER requests is the
+			// frozen baseline node (it opens with the `## Magic Context`
+			// guidance and carries the fold's compartment heading). Before the
+			// fold it is the prompt itself. The parent never reaches pressure,
+			// so only the child ever carries a baseline node.
+			const folded = raw.includes("Session history");
 			const isChild = messages.some(
 				(message) =>
 					message.role === "user" &&
-					JSON.stringify(message.content ?? "").includes("support file"),
+					(JSON.stringify(message.content ?? "").includes("support file") ||
+						JSON.stringify(message.content ?? "").includes("## Magic Context")),
 			);
 			if (isChild) {
 				seen.childSteps += 1;
 				const toolResults = messages.filter(
 					(message) => message.role === "tool",
 				).length;
+				// Once the baseline is in the served history the child must
+				// WRAP UP: another tool call would just hand the fold another
+				// eligible window on the next pass and never finish.
 				if (folded || toolResults >= 2)
 					return { text: "child report", promptTokens: 1_000 };
 				// Refuse band from the first step; the fold is what must open
@@ -139,6 +142,15 @@ describe("V2 live", () => {
 		const compartments = db
 			.prepare("SELECT session_id, title, content FROM compartments")
 			.all() as { session_id: string; title: string; content: string }[];
+		const hashes = db
+			.prepare(
+				"SELECT session_id, is_subagent, system_prompt_hash FROM session_meta",
+			)
+			.all() as {
+			session_id: string;
+			is_subagent: number;
+			system_prompt_hash: string;
+		}[];
 		db.close();
 
 		// The driver reached the child's SECOND step (the fold's moment)…
@@ -153,6 +165,12 @@ describe("V2 live", () => {
 				.map((session) => session.session_id),
 		);
 		expect(childIds.size).toBeGreaterThanOrEqual(1);
+		// The child's head pair persisted: the pair fingerprint (baseline hash
+		// | delta hash) lives in session_meta for restart rediscovery (T044).
+		const childHash = hashes.find(
+			(row) => row.is_subagent === 1 && row.system_prompt_hash !== "",
+		)?.system_prompt_hash;
+		expect(childHash).toMatch(/^[0-9a-f]{32}\|[0-9a-f]{32}$/);
 		// …and every compartment is a fold of CHILD history (not a drop: this
 		// history had nothing the emergency lane could retire above its
 		// minimum). The unpressured parent produced none.

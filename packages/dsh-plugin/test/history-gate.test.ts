@@ -11,19 +11,23 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
-import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
 import { createPromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
-import { registerMagicContextToolsDsh } from "../src/tools/index.js";
 import type { DshHost } from "../src/host.js";
-import { mountAdapter, type AdapterHandle } from "../src/index.js";
+import { type AdapterHandle, mountAdapter } from "../src/index.js";
 import type { DshLogMessageRecord } from "../src/surface/dsh-session-log.js";
+import { registerMagicContextToolsDsh } from "../src/tools/index.js";
 import { TestDshHost } from "./double.js";
 import { callTool, FakeToolHost } from "./double-stub.js";
 
-const SESSION = "s-gate";
+const SESSION = "s-gate-live";
 
 let db: ContextDatabase;
 let handle: AdapterHandle | undefined;
@@ -43,13 +47,18 @@ function seeded(): DshLogMessageRecord[] {
 
 async function indexedCount(): Promise<number> {
 	const row = db
-		.prepare("SELECT COUNT(*) AS n FROM message_history_fts WHERE session_id = ?")
+		.prepare(
+			"SELECT COUNT(*) AS n FROM message_history_fts WHERE session_id = ?",
+		)
 		.get(SESSION) as { n: number };
 	return row.n;
 }
 
 async function waitForIndexed(atLeast: number): Promise<void> {
-	const deadline = Date.now() + 5_000;
+	// The indexer is async and shared; under full-suite load a pass can take
+	// seconds, so the poll budget is generous — the test timeout below is
+	// what actually bounds this.
+	const deadline = Date.now() + 30_000;
 	while ((await indexedCount()) < atLeast && Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
@@ -58,7 +67,10 @@ async function waitForIndexed(atLeast: number): Promise<void> {
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 	expect(db).toBeTruthy();
 });
 
@@ -78,26 +90,36 @@ describe("ctx_search live-visibility gate (T046)", () => {
 			readSessionLog: () => current,
 		});
 		host.addSession({ id: SESSION });
-		host.pressureReadings.set(SESSION, { pressureTokens: 1_000, contextWindow: 100_000 });
-		expect(await host.firePreStep({ sessionId: SESSION, turn: 1, step: 1 })).toBe("enter");
+		host.pressureReadings.set(SESSION, {
+			pressureTokens: 1_000,
+			contextWindow: 100_000,
+		});
+		expect(
+			await host.firePreStep({ sessionId: SESSION, turn: 1, step: 1 }),
+		).toBe("enter");
 		await waitForIndexed(12);
 
 		const toolHost = new FakeToolHost();
-		disposeTools = registerMagicContextToolsDsh(toolHost as unknown as DshHost, {
-			db,
-			sessionId: () => SESSION,
-			projectDir,
-			protectedTags: 20,
-			promptSurfaceRuntime: createPromptSurfaceRuntime({
-				harness: "dsh",
-				directory: projectDir,
-				warn: () => {},
-			}),
-		});
+		disposeTools = registerMagicContextToolsDsh(
+			toolHost as unknown as DshHost,
+			{
+				db,
+				sessionId: () => SESSION,
+				projectDir,
+				protectedTags: 20,
+				promptSurfaceRuntime: createPromptSurfaceRuntime({
+					harness: "dsh",
+					directory: projectDir,
+					warn: () => {},
+				}),
+			},
+		);
 
 		// Everything is visible: the lane must not return raw hits, and the
 		// suppression note names the live-tail reason (issue #131 intent).
-		const visible = await callTool(toolHost, "ctx_search", { query: "zephyr7" });
+		const visible = await callTool(toolHost, "ctx_search", {
+			query: "zephyr7",
+		});
 		expect(visible).not.toContain("[message]");
 		expect(visible).toContain("already in your context");
 
@@ -112,8 +134,10 @@ describe("ctx_search live-visibility gate (T046)", () => {
 		expect(folded).toContain("zephyr7");
 
 		// Still-visible messages stay suppressed even after the fold.
-		const stillLive = await callTool(toolHost, "ctx_search", { query: "zephyr11" });
+		const stillLive = await callTool(toolHost, "ctx_search", {
+			query: "zephyr11",
+		});
 		expect(stillLive).not.toContain("[message]");
 		expect(stillLive).toContain("already in your context");
-	});
+	}, 60_000);
 });

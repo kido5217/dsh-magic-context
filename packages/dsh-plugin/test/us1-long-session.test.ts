@@ -119,20 +119,24 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		expect(text.startsWith(buildReplacementContent(tag))).toBe(true);
 	});
 
-	test("head refresh replaces the single head node when rendered bytes change", async () => {
+	test("head refresh replaces the delta node when rendered bytes change", async () => {
 		const session = host.sessions.get("s-auto")!;
-		const oldHead = handle!.head.peek("s-auto")!.seq;
+		const before = handle!.head.peek("s-auto")!;
 		appendCompartments(db, "s-auto", [
 			{ sequence: 1, startMessage: 0, endMessage: 4, startMessageId: "m0", endMessageId: "m4", title: "Seeded history", content: "Early project work." },
 		]);
 		expect(await host.firePreStep(stepFor("s-auto"))).toBe("enter");
 
+		// Baseline/delta split (T043): a post-baseline compartment lands in the
+		// DELTA node; the frozen baseline is untouched.
 		const head = handle!.head.peek("s-auto")!;
-		expect(head.seq).not.toBe(oldHead);
-		expect(session.surfaceNodes()).not.toContain(oldHead);
-		expect(session.surfaceNodes()).toContain(head.seq);
-		const headText = session.logRecords().find((record) => record.seq === head.seq)!.text;
-		expect(headText).toContain("Early project work.");
+		expect(head.seq).toBe(before.seq);
+		expect(head.deltaSeq).toBeDefined();
+		expect(head.deltaSeq).not.toBe(before.deltaSeq);
+		expect(session.surfaceNodes()).not.toContain(before.deltaSeq ?? -1);
+		expect(session.surfaceNodes()).toContain(head.deltaSeq!);
+		const deltaText = session.logRecords().find((record) => record.seq === head.deltaSeq)!.text;
+		expect(deltaText).toContain("Early project work.");
 		const kinds = session.eventsOf("mc/manage-start").map((entry) => entry.data.kind);
 		expect(kinds).toContain("head-refresh");
 	});
@@ -158,8 +162,9 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		expect(compartments[0]!.endMessage).toBe(6); // emergency budget halves the tail
 		expect(compartments[0]!.content).toBe("Folded early work.");
 
-		// Effect: the fold collapsed seqs 0..6 into the fresh head node.
-		expect(session.surfaceNodes()).toEqual([7, handle!.head.peek("s-fold")!.seq]);
+		// Effect: the fold collapsed seqs 0..6 into the fresh baseline node,
+		// with a new placeholder delta after it (T043 pair semantics).
+		expect(session.surfaceNodes()).toEqual([7, handle!.head.peek("s-fold")!.seq, handle!.head.peek("s-fold")!.deltaSeq!]);
 		const kinds = session.eventsOf("mc/manage-start").map((entry) => entry.data.kind);
 		expect(kinds).toEqual(["fold"]);
 	});

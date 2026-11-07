@@ -16,10 +16,18 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import { insertTag } from "@magic-context/core/features/magic-context/storage-tags";
-import { getPendingOps, removePendingOp } from "@magic-context/core/features/magic-context/storage-ops";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
+import {
+	getPendingOps,
+	removePendingOp,
+} from "@magic-context/core/features/magic-context/storage-ops";
+import { insertTag } from "@magic-context/core/features/magic-context/storage-tags";
+import type { PendingOp } from "@magic-context/core/features/magic-context/types";
 import { setRawMessageProvider } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import type { RawMessage } from "@magic-context/core/hooks/magic-context/read-session-raw";
 import { setHarness } from "@magic-context/core/shared/harness";
@@ -27,9 +35,8 @@ import { createPromptSurfaceRuntime } from "@magic-context/core/shared/prompt-su
 import { SessionMapping } from "../src/sessions/mapping.js";
 import { ManagedEdits } from "../src/surface/managed-edits.js";
 import { registerMagicContextToolsDsh } from "../src/tools/index.js";
-import type { PendingOp } from "@magic-context/core/features/magic-context/types";
-import { McHost, callTool } from "./fixtures-dsh.js";
 import { fixtureProvider } from "./double-stub.js";
+import { callTool, McHost } from "./fixtures-dsh.js";
 
 const SESSION = "us3-first-run-7741";
 const ORIGINAL = "The very first user turn in this brand-new project.\n";
@@ -43,7 +50,9 @@ let unregisterProvider: (() => void) | undefined;
 let disposeTools: (() => void) | undefined;
 
 function count(table: string): number {
-	const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+	const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
+		n: number;
+	};
 	return row.n;
 }
 
@@ -66,7 +75,14 @@ describe("FR-010: first session on a brand-new store needs no setup step", () =>
 	test("the store opens with zero pre-existing rows", async () => {
 		db = (await openDatabaseAsync({ dbPath }))!;
 		expect(db).toBeTruthy();
-		for (const table of ["session_meta", "tags", "notes", "pending_ops", "memories", "message_history_index"]) {
+		for (const table of [
+			"session_meta",
+			"tags",
+			"notes",
+			"pending_ops",
+			"memories",
+			"message_history_index",
+		]) {
 			expect(count(table), table).toBe(0);
 		}
 	});
@@ -76,7 +92,9 @@ describe("FR-010: first session on a brand-new store needs no setup step", () =>
 		// upsert). No bootstrap/setup API, no config file, no CLI step.
 		const mapping = new SessionMapping(db);
 		expect(mapping.upsert({ id: SESSION }).mcSession).toBe(SESSION);
-		const meta = db.prepare("SELECT harness FROM session_meta WHERE session_id = ?").get(SESSION) as { harness: string };
+		const meta = db
+			.prepare("SELECT harness FROM session_meta WHERE session_id = ?")
+			.get(SESSION) as { harness: string };
 		expect(meta.harness).toBe("dsh");
 		expect(count("tags")).toBe(0);
 		expect(count("notes")).toBe(0);
@@ -89,10 +107,20 @@ describe("FR-010: first session on a brand-new store needs no setup step", () =>
 			sessionId: () => SESSION,
 			projectDir,
 			protectedTags: 20,
-			promptSurfaceRuntime: createPromptSurfaceRuntime({ harness: "dsh", directory: projectDir, warn: () => {} }),
+			promptSurfaceRuntime: createPromptSurfaceRuntime({
+				harness: "dsh",
+				directory: projectDir,
+				warn: () => {},
+			}),
 			memoryEnabled: true,
 		});
-		expect(host.registrationOrder).toEqual(["ctx_search", "ctx_memory", "ctx_note", "ctx_expand", "ctx_reduce"]);
+		expect(host.registrationOrder).toEqual([
+			"ctx_search",
+			"ctx_memory",
+			"ctx_note",
+			"ctx_expand",
+			"ctx_reduce",
+		]);
 
 		// 1. ctx_search: first call on a store with no history answers an
 		//    empty-but-successful result (core formatSearchResults text).
@@ -100,7 +128,9 @@ describe("FR-010: first session on a brand-new store needs no setup step", () =>
 			query: "first-run zebra probe",
 			sources: ["memory"],
 		});
-		expect(emptySearch).toContain('No results found for "first-run zebra probe"');
+		expect(emptySearch).toContain(
+			'No results found for "first-run zebra probe"',
+		);
 
 		// 2. ctx_note: session-scoped write on a store that never saw a note.
 		const noteReply = await callTool(host, "ctx_note", {
@@ -117,7 +147,9 @@ describe("FR-010: first session on a brand-new store needs no setup step", () =>
 			category: "PROJECT_RULES",
 			ids: [],
 		});
-		expect(memoryReply).toMatch(/^Saved memory \[ID: \d+\] in PROJECT_RULES\.$/);
+		expect(memoryReply).toMatch(
+			/^Saved memory \[ID: \d+\] in PROJECT_RULES\.$/,
+		);
 		// The project identity resolves from the workspace dir alone.
 		expect(resolveProjectIdentityForSession(projectDir)).toBeTruthy();
 
@@ -125,7 +157,14 @@ describe("FR-010: first session on a brand-new store needs no setup step", () =>
 		//    activity, not setup), the first expand returns the stored original.
 		const bytes = new TextEncoder().encode(ORIGINAL).length;
 		insertTag(db, SESSION, "m1", "message", bytes, 1);
-		const raw: RawMessage[] = [{ ordinal: 1, id: "m1", role: "user", parts: [{ type: "text", text: ORIGINAL }] }];
+		const raw: RawMessage[] = [
+			{
+				ordinal: 1,
+				id: "m1",
+				role: "user",
+				parts: [{ type: "text", text: ORIGINAL }],
+			},
+		];
 		unregisterProvider = setRawMessageProvider(SESSION, fixtureProvider(raw));
 		const expanded = await callTool(host, "ctx_expand", { tag: 1 });
 		expect(expanded).toContain(ORIGINAL.trimEnd());
@@ -134,28 +173,38 @@ describe("FR-010: first session on a brand-new store needs no setup step", () =>
 		const reduceReply = await callTool(host, "ctx_reduce", { drop: "1" });
 		expect(reduceReply).toBe("1 tag stamped.");
 		const edits = new ManagedEdits(host);
-		const shadow = await edits.runManagedChange("drop", "chg-first-run", SESSION, {
-			decision: async () => getPendingOps(db, SESSION),
-			effect: async (ops: PendingOp[]) => {
-				const targets = ops.map((op) => op.tagId);
-				const { replacementSeq } = await session.replaceSurface(
-					[{ type: "text", text: "[dropped §1§]" }],
-					1,
-					1,
-					[1],
-				);
-				for (const tagId of targets) removePendingOp(db, SESSION, tagId);
-				return { replacementSeq, shadowedSeqs: targets };
+		const shadow = await edits.runManagedChange(
+			"drop",
+			"chg-first-run",
+			SESSION,
+			{
+				decision: async () => getPendingOps(db, SESSION),
+				effect: async (ops: PendingOp[]) => {
+					const targets = ops.map((op) => op.tagId);
+					const { replacementSeq } = await session.replaceSurface(
+						[{ type: "text", text: "[dropped §1§]" }],
+						1,
+						1,
+						[1],
+					);
+					for (const tagId of targets) removePendingOp(db, SESSION, tagId);
+					return { replacementSeq, shadowedSeqs: targets };
+				},
 			},
-		});
+		);
 		expect(shadow.replacementSeq).toBeTypeOf("number");
 		expect(session.surfaceNodes()).toEqual([0, 2, 3, shadow.replacementSeq!]);
-		expect(session.eventsOf("mc/manage-end").map((entry) => entry.data.shadowedSeqs)).toEqual([[1]]);
+		expect(
+			session.eventsOf("mc/manage-end").map((entry) => entry.data.shadowedSeqs),
+		).toEqual([[1]]);
 		expect(getPendingOps(db, SESSION)).toEqual([]);
 
 		// No config write was required: nothing landed under the (isolated)
 		// XDG config home; the only artifact is the database file itself.
-		const configRoot = join(process.env.XDG_CONFIG_HOME ?? "nonexistent", "cortexkit");
+		const configRoot = join(
+			process.env.XDG_CONFIG_HOME ?? "nonexistent",
+			"cortexkit",
+		);
 		expect(existsSync(configRoot)).toBe(false);
 		expect(existsSync(dbPath)).toBe(true);
 	});

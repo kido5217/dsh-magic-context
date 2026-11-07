@@ -26,6 +26,7 @@ import {
 	runAutoSearchHint,
 } from "@magic-context/core/hooks/magic-context/auto-search-runner";
 import { cavemanWordRulesForLanguage } from "@magic-context/core/hooks/magic-context/caveman";
+import { readHeadCursors } from "../surface/head-cursors.js";
 import type { NodeOpRequest } from "../surface/node-ops.js";
 import type { Lane, LaneContext, LaneSelection } from "./engine.js";
 
@@ -62,22 +63,19 @@ export function autoSearchMessages(context: LaneContext): {
 	return { messages, messageIdByIndex };
 }
 
-/** Memory ids the head has already shown this session (rendered-id capture). */
+/** Memory ids the head has already shown this session (baseline cursors). */
 function renderedMemoryIds(context: LaneContext): Set<number> | undefined {
-	const row = context.db
-		.prepare("SELECT memory_block_ids FROM session_meta WHERE session_id = ?")
-		.get(context.mcSession) as { memory_block_ids?: string | null } | null;
-	if (row?.memory_block_ids == null) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(row.memory_block_ids);
-		if (!Array.isArray(parsed)) return undefined;
-		const ids = parsed.filter(
-			(value): value is number => typeof value === "number",
-		);
-		return ids.length > 0 ? new Set(ids) : undefined;
-	} catch {
+	// The frozen baseline's rendered-id manifest (core upgrade identity in
+	// `session_meta`), not the retired `memory_block_ids` cache (T046): the
+	// two-node head persists through the core materializer.
+	const cursors = readHeadCursors(context.db, context.mcSession, {
+		projectPath: resolveProjectIdentityForSession(context.projectDir),
+		projectDirectory: context.projectDir,
+		memoryEnabled: context.config.memory?.enabled ?? true,
+	});
+	if (cursors === undefined || cursors.renderedMemoryIds.length === 0)
 		return undefined;
-	}
+	return new Set(cursors.renderedMemoryIds);
 }
 
 export interface AutoSearchSelection {

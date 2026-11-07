@@ -58,7 +58,7 @@ const INJECTED =
 
 function gate(overrides: Partial<LaneGateRequest> = {}): LaneGateRequest {
 	return {
-		sessionId: "s-gate",
+		sessionId: "s-gate-lanes",
 		lane: "injection-strip",
 		frequency: "routine",
 		role: "primary",
@@ -103,7 +103,7 @@ describe("episode gating", () => {
 	test("primary: once per episode; subagent: every permitted pass", () => {
 		const gates = new LaneGates();
 		expect(gates.allows(gate())).toBe(true);
-		gates.commit("s-gate", "injection-strip", "primary");
+		gates.commit("s-gate-lanes", "injection-strip", "primary");
 		expect(gates.allows(gate())).toBe(false);
 
 		expect(gates.allows(gate({ sessionId: "s-sub", role: "subagent" }))).toBe(
@@ -118,11 +118,11 @@ describe("episode gating", () => {
 
 	test("falling below the execute band starts a new episode", () => {
 		const gates = new LaneGates();
-		gates.commit("s-gate", "injection-strip", "primary");
+		gates.commit("s-gate-lanes", "injection-strip", "primary");
 		expect(gates.allows(gate())).toBe(false);
-		gates.resetEpisode("s-gate");
+		gates.resetEpisode("s-gate-lanes");
 		expect(gates.allows(gate())).toBe(true);
-		expect(gates.snapshot("s-gate")).toEqual([]);
+		expect(gates.snapshot("s-gate-lanes")).toEqual([]);
 	});
 
 	test("emergency runs only from the force band", () => {
@@ -210,7 +210,7 @@ describe("injection-strip lane", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
-			projectDir: process.cwd(),
+				projectDir: process.cwd(),
 				lanes: [injectionStripLane],
 				gates: new LaneGates(),
 			});
