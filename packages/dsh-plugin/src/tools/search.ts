@@ -13,6 +13,7 @@ import {
 	defineTool,
 	type ParameterSchemaSpec,
 	type ToolDefinition,
+	type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
 import type { RerankConfig } from "@magic-context/core/config/schema/magic-context";
 import { getLastCompartmentEndMessage } from "@magic-context/core/features/magic-context/compartment-storage";
@@ -59,7 +60,7 @@ type CtxSearchSource = (typeof SOURCE_VALUES)[number];
 
 export interface CtxSearchToolDshDeps {
 	db: ContextDatabase;
-	sessionId: () => string;
+	sessionId: (exec?: ToolRunContext) => string;
 	projectDir: string;
 	memoryEnabled?: boolean;
 	embeddingEnabled?: boolean;
@@ -139,7 +140,7 @@ export function createCtxSearchTool(
 				throw new Error(`Error: ${error.message}`);
 			}
 
-			const sessionId = deps.sessionId();
+			const sessionId = deps.sessionId(exec);
 			const projectIdentity = resolveProjectIdentityForSession(deps.projectDir);
 			if (!projectIdentity) {
 				throw new Error(

@@ -15,7 +15,10 @@
  * parent link has no core column, so it lives in an adapter-local Map (also
  * carried in every `mc/manage-start` payload via `mcSession` attribution).
  */
-import { getOrCreateSessionMeta, updateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
+import {
+	getOrCreateSessionMeta,
+	updateSessionMeta,
+} from "@magic-context/core/features/magic-context/storage-meta-session";
 import type { Database } from "@magic-context/core/shared/sqlite";
 import type { DshSessionHeaderFacts } from "../host.js";
 
@@ -57,7 +60,9 @@ export class SessionMapping {
 			mcSession: header.id,
 			dshSessionId: header.id,
 			role,
-			...(header.parentSession !== undefined ? { parentDshSessionId: header.parentSession } : {}),
+			...(header.parentSession !== undefined
+				? { parentDshSessionId: header.parentSession }
+				: {}),
 		};
 		this.mappings.set(header.id, mapping);
 		return mapping;

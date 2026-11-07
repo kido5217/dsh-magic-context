@@ -19,9 +19,13 @@
  * core's `setRawMessageProvider(sessionId, provider)` for the session's
  * managed lifetime; the returned disposer unregisters.
  */
+import type { ContentBlock } from "@deepseek-ai/dsh-llm/types";
 import type { RawMessageProvider } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import { setRawMessageProvider } from "@magic-context/core/hooks/magic-context/read-session-chunk";
-import type { RawMessage, RawMessageParts } from "@magic-context/core/hooks/magic-context/read-session-raw";
+import type {
+	RawMessage,
+	RawMessageParts,
+} from "@magic-context/core/hooks/magic-context/read-session-raw";
 
 /** One surface-visible message read off the DSH session log. */
 export interface DshLogMessageRecord {
@@ -33,16 +37,34 @@ export interface DshLogMessageRecord {
 	/** Concatenated text content of the message's content blocks. */
 	readonly text: string;
 	readonly createdAt?: number;
+	/**
+	 * Full provider-neutral content blocks, preserving reasoning, tool calls and
+	 * image/file references. Optional so narrow doubles can project text only;
+	 * production always fills it. Lane code must treat an absent value as
+	 * text-only rather than reconstructing structure from `text`.
+	 */
+	readonly blocks?: readonly ContentBlock[];
+	/** Tool call this message answers (`role === "tool"`). */
+	readonly toolCallId?: string;
+	/** True when a reasoning block carries a provider replay signature. */
+	readonly reasoningSigned?: boolean;
+	/** Tool failure marker for tool-result messages. */
+	readonly isError?: boolean;
 }
 
 /** Host seam: read the current surface-visible message records of a session. */
-export type DshSessionLogReader = (dshSessionId: string) => readonly DshLogMessageRecord[] | undefined;
+export type DshSessionLogReader = (
+	dshSessionId: string,
+) => readonly DshLogMessageRecord[] | undefined;
 
 /** Projection of one session's surface log into the core's raw-history shape. */
 export interface DshLogProjection {
 	readonly rawMessages: RawMessage[];
 	/** Projection position (1-based ordinal) per message, keyed by durable id. */
-	readonly byMessageId: ReadonlyMap<string, { readonly ordinal: number; readonly seq: number; readonly bytes: number }>;
+	readonly byMessageId: ReadonlyMap<
+		string,
+		{ readonly ordinal: number; readonly seq: number; readonly bytes: number }
+	>;
 	readonly records: readonly DshLogMessageRecord[];
 }
 
@@ -63,9 +85,14 @@ function recordText(record: DshLogMessageRecord): string {
 }
 
 /** Project surface message records (seq/position order) into the core RawMessage shape. */
-export function projectDshSessionLog(records: readonly DshLogMessageRecord[]): DshLogProjection {
+export function projectDshSessionLog(
+	records: readonly DshLogMessageRecord[],
+): DshLogProjection {
 	const rawMessages: RawMessage[] = [];
-	const byMessageId = new Map<string, { ordinal: number; seq: number; bytes: number }>();
+	const byMessageId = new Map<
+		string,
+		{ ordinal: number; seq: number; bytes: number }
+	>();
 	let ordinal = 0;
 	for (const record of records) {
 		if (!PROJECTED_ROLES.has(record.role)) continue;
@@ -76,28 +103,41 @@ export function projectDshSessionLog(records: readonly DshLogMessageRecord[]): D
 			id: record.messageId,
 			role: record.role,
 			parts: text.length > 0 ? [{ type: "text", text }] : [],
-			...(record.createdAt !== undefined ? { createdAt: record.createdAt } : {}),
+			...(record.createdAt !== undefined
+				? { createdAt: record.createdAt }
+				: {}),
 		});
-		byMessageId.set(record.messageId, { ordinal, seq: record.seq, bytes: text.length });
+		byMessageId.set(record.messageId, {
+			ordinal,
+			seq: record.seq,
+			bytes: text.length,
+		});
 	}
 	return { rawMessages, byMessageId, records };
 }
 
 /** Build the core `RawMessageProvider` over a live projection supplier. */
-export function createDshRawMessageProvider(project: () => DshLogProjection): RawMessageProvider {
+export function createDshRawMessageProvider(
+	project: () => DshLogProjection,
+): RawMessageProvider {
 	return {
 		readMessages: () => project().rawMessages,
 		getMessageCount: () => project().rawMessages.length,
 		hasMessageById: (messageId: string) => project().byMessageId.has(messageId),
-		readMessageById: (messageId: string) => project().rawMessages.find((message) => message.id === messageId) ?? null,
+		readMessageById: (messageId: string) =>
+			project().rawMessages.find((message) => message.id === messageId) ?? null,
 		readMessagePartsById: (messageId: string): RawMessageParts | null => {
-			const message = project().rawMessages.find((candidate) => candidate.id === messageId);
+			const message = project().rawMessages.find(
+				(candidate) => candidate.id === messageId,
+			);
 			return message ?? null;
 		},
-		readMessageOrdinalById: (messageId: string) => project().byMessageId.get(messageId)?.ordinal ?? null,
+		readMessageOrdinalById: (messageId: string) =>
+			project().byMessageId.get(messageId)?.ordinal ?? null,
 		readMessageIdOrdinals: () => {
 			const map = new Map<string, number>();
-			for (const [messageId, entry] of project().byMessageId) map.set(messageId, entry.ordinal);
+			for (const [messageId, entry] of project().byMessageId)
+				map.set(messageId, entry.ordinal);
 			return map;
 		},
 	};
@@ -109,6 +149,12 @@ export function createDshRawMessageProvider(project: () => DshLogProjection): Ra
  * (readSessionChunk, the historian trigger, ctx_expand) then read DSH durable
  * history instead of the OpenCode DB default.
  */
-export function registerDshRawHistoryProvider(dshSessionId: string, project: () => DshLogProjection): () => void {
-	return setRawMessageProvider(dshSessionId, createDshRawMessageProvider(project));
+export function registerDshRawHistoryProvider(
+	dshSessionId: string,
+	project: () => DshLogProjection,
+): () => void {
+	return setRawMessageProvider(
+		dshSessionId,
+		createDshRawMessageProvider(project),
+	);
 }

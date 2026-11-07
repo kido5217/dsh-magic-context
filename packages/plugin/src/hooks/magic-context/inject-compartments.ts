@@ -2986,7 +2986,7 @@ function renderMemoryUpdatesBlock(args: {
     };
 }
 
-interface RenderM1Result {
+export interface RenderM1Result {
     text: string;
     memoryUpdateCount: number;
     renderedMemoryIds: number[];
@@ -3131,6 +3131,21 @@ export function renderM1(
     renderedMemoryIds: readonly number[] = [],
 ): string {
     return renderM1WithMetadata(options, markers, renderedMemoryIds).text;
+}
+
+/**
+ * The session-delta entry point (m[1]): the metadata-bearing form of
+ * `renderM1` for hosts that keep a frozen baseline and a volatile delta
+ * node and need the rendered-memory ids back (visible-memory filtering,
+ * supersession bookkeeping). Same bytes as `renderM1` for the same input;
+ * the extra fields are the delta's own accounting.
+ */
+export function renderSessionDelta(
+    options: M0M1RenderOptions,
+    markers: M0SnapshotMarkers,
+    renderedMemoryIds: readonly number[] = [],
+): RenderM1Result {
+    return renderM1WithMetadata(options, markers, renderedMemoryIds);
 }
 
 function decodeM0Bytes(bytes: Buffer | Uint8Array | null): string | null {

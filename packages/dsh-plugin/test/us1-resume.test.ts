@@ -112,9 +112,10 @@ describe("US1 resume: covered history is never re-summarized", () => {
 		expect(compartments[2]!.startMessage).toBe(m9SeqForFold3); // the previously protected newest message
 		expect(compartments[2]!.endMessage).toBe(m10Seq);
 		expect(transcript(1)).toContain(`[${String(m10Seq)}]`);
-		// Surface after three folds: newest message + one fresh head node.
+		// Surface after three folds: newest message + one fresh baseline node
+		// + its placeholder delta (T043 pair semantics).
 		const head = handle!.head.peek("r-main")!;
-		expect(session.surfaceNodes()).toEqual([m11Seq, head.seq]);
+		expect(session.surfaceNodes()).toEqual([m11Seq, head.seq, head.deltaSeq!]);
 		await handle!.dispose();
 		handle = undefined;
 	});

@@ -93,6 +93,70 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
      sessions render and search what an OpenCode dreamer maintains (shared store).
      Declared per spec edge case 3 ("silence is not an option"), not silently skipped.
 
+15. **Resolved — assistant-body reduction is available (projection lane).** The v1 plan
+    treated edits *inside* an assistant message as host-blocked (a replacement must cite
+    every shadowed node, and `assistant/message` forbids `sourceEventSeqs`). That is true
+    of the surface REPLACE path, and false of the host's message-projection seam: an
+    ignorable, plugin-owned event plus a registered pure interpreter
+    (`ctx.sessions.registerMessageProjection`) rewrites an existing message's content
+    without changing node membership or identity (`packages/core/session/src/surface.ts`:
+    `planSurfaceEvent` consults registered projections before `surfaceOp`;
+    `applySurfacePlan`'s `kind:"project"` branch). The rewrite is durable while the
+    plugin is loaded and degrades to the original content — never a refusal — when it is
+    not, because unknown ignorable events are skipped by the reopen validator. Evidence:
+    `specs/002-dsh-full-parity/gate-evidence/spike-projection.md`,
+    `packages/dsh-plugin/test/projection.test.ts`. Consequence: reasoning clearing,
+    caveman compression of assistant prose and injection stripping inside assistant
+    content are all expressible; the previous "not applicable" class is withdrawn.
+
+16. **DSH-imposed — a subagent at the refuse wall takes one historian fold.** When a
+    child session is at the wall and no open reclaim lane can act (no queued drops, no
+    aged tool output, nothing superseded), the adapter runs one fold instead of refusing
+    the step. The fold PRESERVES the content as a summary rather than deleting it, and it
+    costs one aux model call. Rationale: a child has no user to negotiate with and its
+    caller is blocked on the answer; refusing would deadlock the delegation. On the other
+    harnesses the child's request is rewritten in place, so this situation does not
+    arise. Evidence: `src/pressure/lanes.ts` (refuse band, subagent branch),
+    `src/lanes/emergency.ts`, `test/us1-emergency.test.ts`, and the live proof
+    `test/live-v2.test.ts` (a real `dsh` child at the wall folds: a compartment on the
+    `is_subagent=1` session and a request-only historian call observed on the wire).
+
+17. **DSH-imposed — reductions are per-node edits, never a span.** A queued drop edits
+    each target node on its own: a tool result is rewritten in place (content only,
+    identity and tool pairing preserved), a user message is replaced one-for-one, and an
+    assistant body goes through the projection lane (entry 15). The earlier v1
+    implementation collapsed a drop cluster into one `user/message` replacement covering
+    `min…max`, which swallowed every unrelated node between two targets. The host
+    permits the span, but the transcript harm is not host-forced, so the coarse form was
+    a defect rather than a divergence. Evidence: `src/surface/node-ops.ts`,
+    `test/node-ops.test.ts`, `test/us1-long-session.test.ts`.
+
+18. **DSH-imposed — provider reasoning is replayed and cannot be dropped by the adapter.**
+    The host reconstructs a historical assistant message's reasoning from the message's own
+    replay state, not from the content blocks a plugin supplies, so a projection rewrite
+    replaces the visible answer while the reasoning that produced it still goes out. The
+    core drops reasoning together with the text it answered (`keepReasoning` distinguishes
+    the meaning-preserving case); on DSH no seam expresses either choice. Evidence:
+    `specs/002-dsh-full-parity/gate-evidence/spike-reasoning-replay.md` (live: the resumed
+    request carries `reasoning_content` verbatim), `packages/dsh-plugin/test/reasoning-replay.test.ts`.
+    Effect: a session's reasoning is reclaimed only when the host's own retention drops it
+    (route/model switch, TTL, a native compaction); MC's contribution is limited to the
+    body. Declared rather than silently skipped.
+
+19. **Declared — the local embedding runtime is not shipped in the DSH bundle.** Semantic
+    `ctx_search` and auto-search candidates need an embedding index. The core's local provider
+    runs Xenova/all-MiniLM-L6-v2 through onnxruntime plus a worker process
+    (`embedding-worker-process.ts`), neither of which this package ships: adding the native
+    runtime is a packaging change with per-platform binaries, not a code path. The adapter
+    therefore triggers the shared backfill only for REMOTE providers (`openai-compatible`,
+    `synapse`), where the core already runs the index off-thread over HTTP, and does nothing
+    for `local` (the default) — calling it there would fail on every pass instead of doing
+    useful work. Effect on a DSH-only machine with default config: hints and semantic search
+    stay empty while `memory.enabled` and the keyword/recency lanes work normally. Follow-up:
+    ship `embedding-worker-process.js` plus the onnx dependency, or document a remote provider
+    in the setup flow. Evidence: `src/pressure/lanes.ts` (`maybeBackfillEmbeddings`),
+    `test/us1-assistance.test.ts` (local/off is never triggered).
+
 ## Resolved since the v1 ledger was written
 
 - **Transcript FTS indexing — wired through the pass lane (T045).** The core

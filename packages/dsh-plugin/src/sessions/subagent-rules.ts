@@ -36,6 +36,18 @@ export interface McRoleRules {
 
 export function rulesForRole(role: McSessionRole): McRoleRules {
 	return role === "subagent"
-		? { role, ownSessionScope: true, summarizerMemoryWrites: false, summarizerUserObservations: false, sharedCacheEconomics: true }
-		: { role, ownSessionScope: true, summarizerMemoryWrites: true, summarizerUserObservations: true, sharedCacheEconomics: true };
+		? {
+				role,
+				ownSessionScope: true,
+				summarizerMemoryWrites: false,
+				summarizerUserObservations: false,
+				sharedCacheEconomics: true,
+			}
+		: {
+				role,
+				ownSessionScope: true,
+				summarizerMemoryWrites: true,
+				summarizerUserObservations: true,
+				sharedCacheEconomics: true,
+			};
 }

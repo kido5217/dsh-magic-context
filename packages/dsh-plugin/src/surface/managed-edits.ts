@@ -22,7 +22,7 @@
  * decision may not have reached the surface).
  */
 import type { DshHost, DshSession } from "../host.js";
-import type { McManageEnd, McManagedChangeKind } from "./events.js";
+import type { McManagedChangeKind, McManageEnd } from "./events.js";
 
 /** A shared store that rejected a write because it is busy (SQLITE_BUSY). */
 export class StoreBusyError extends Error {
@@ -82,9 +82,16 @@ export class ManagedEdits {
 	 * effect failures reject with the effect's own error after an error-closed
 	 * bracket.
 	 */
-	runManagedChange<T>(kind: McManagedChangeKind, changeId: string, mcSession: string, opts: ManagedChangeOptions<T>): Promise<ShadowInfo> {
+	runManagedChange<T>(
+		kind: McManagedChangeKind,
+		changeId: string,
+		mcSession: string,
+		opts: ManagedChangeOptions<T>,
+	): Promise<ShadowInfo> {
 		const dshSessionId = opts.dshSessionId ?? mcSession;
-		return this.withLock(dshSessionId, () => this.runLocked(kind, changeId, mcSession, dshSessionId, opts));
+		return this.withLock(dshSessionId, () =>
+			this.runLocked(kind, changeId, mcSession, dshSessionId, opts),
+		);
 	}
 
 	/** Brackets opened but not yet closed (in-memory; durable evidence is in the log). */
@@ -97,30 +104,63 @@ export class ManagedEdits {
 		this.chains.clear();
 	}
 
-	private async runLocked<T>(kind: McManagedChangeKind, changeId: string, mcSession: string, dshSessionId: string, opts: ManagedChangeOptions<T>): Promise<ShadowInfo> {
+	private async runLocked<T>(
+		kind: McManagedChangeKind,
+		changeId: string,
+		mcSession: string,
+		dshSessionId: string,
+		opts: ManagedChangeOptions<T>,
+	): Promise<ShadowInfo> {
 		const session = this.host.getSession(dshSessionId);
 		if (!session) {
-			throw new StoreUnavailableError(`[magic-context] dsh session ${dshSessionId} is not attached; refusing to apply unmanaged change ${changeId} (FR-004)`);
+			throw new StoreUnavailableError(
+				`[magic-context] dsh session ${dshSessionId} is not attached; refusing to apply unmanaged change ${changeId} (FR-004)`,
+			);
 		}
-		const startData: Record<string, unknown> = { changeId, kind, mcSession, dshSessionId, ignorable: true };
+		const startData: Record<string, unknown> = {
+			changeId,
+			kind,
+			mcSession,
+			dshSessionId,
+			ignorable: true,
+		};
 		await session.appendLogEvent("mc/manage-start", startData);
 		await session.flush();
-		this.pending.set(changeId, { changeId, kind, mcSession, dshSessionId, startedAt: Date.now() });
+		this.pending.set(changeId, {
+			changeId,
+			kind,
+			mcSession,
+			dshSessionId,
+			startedAt: Date.now(),
+		});
 		let decision: T;
 		try {
 			decision = await opts.decision();
 		} catch (error) {
-			await this.closeBracket(session, { changeId, kind, error: describeError(error), ignorable: true });
+			await this.closeBracket(session, {
+				changeId,
+				kind,
+				error: describeError(error),
+				ignorable: true,
+			});
 			this.pending.delete(changeId);
 			throw error instanceof StoreUnavailableError
 				? error
-				: new StoreUnavailableError(`[magic-context] store decision for managed change ${changeId} failed; decision stays unapplied`, { cause: error });
+				: new StoreUnavailableError(
+						`[magic-context] store decision for managed change ${changeId} failed; decision stays unapplied`,
+						{ cause: error },
+					);
 		}
 		let shadow: ShadowInfo;
 		try {
 			shadow = await opts.effect(decision);
 		} catch (error) {
-			await this.closeBracket(session, { changeId, kind, error: describeError(error), ignorable: true });
+			await this.closeBracket(session, {
+				changeId,
+				kind,
+				error: describeError(error),
+				ignorable: true,
+			});
 			this.pending.delete(changeId);
 			throw error;
 		}
@@ -128,14 +168,21 @@ export class ManagedEdits {
 			changeId,
 			kind,
 			ignorable: true,
-			...(shadow.shadowedSeqs !== undefined ? { shadowedSeqs: shadow.shadowedSeqs } : {}),
-			...(shadow.replacementSeq !== undefined ? { replacementSeq: shadow.replacementSeq } : {}),
+			...(shadow.shadowedSeqs !== undefined
+				? { shadowedSeqs: shadow.shadowedSeqs }
+				: {}),
+			...(shadow.replacementSeq !== undefined
+				? { replacementSeq: shadow.replacementSeq }
+				: {}),
 		});
 		this.pending.delete(changeId);
 		return shadow;
 	}
 
-	private async closeBracket(session: DshSession, data: McManageEnd): Promise<void> {
+	private async closeBracket(
+		session: DshSession,
+		data: McManageEnd,
+	): Promise<void> {
 		await session.appendLogEvent("mc/manage-end", { ...data });
 		await session.flush();
 	}

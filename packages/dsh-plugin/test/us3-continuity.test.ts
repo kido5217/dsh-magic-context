@@ -24,26 +24,33 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import {
+	getMemoriesByProject,
+	insertMemory,
+} from "@magic-context/core/features/magic-context/memory";
+import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
+import { markMessageIndexDirty } from "@magic-context/core/features/magic-context/message-index";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
 import { queuePendingOp } from "@magic-context/core/features/magic-context/storage-ops";
-import { markMessageIndexDirty } from "@magic-context/core/features/magic-context/message-index";
-import { insertMemory } from "@magic-context/core/features/magic-context/memory";
-import { getMemoriesByProject } from "@magic-context/core/features/magic-context/memory";
-import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { createPromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
 import { SessionMapping } from "../src/sessions/mapping.js";
 import { registerMagicContextToolsDsh } from "../src/tools/index.js";
-import { McHost, callTool } from "./fixtures-dsh.js";
+import { callTool, McHost } from "./fixtures-dsh.js";
 
 const OC_SESSION = "us3-cont-opencode-7741";
 const DSH_SESSION = "us3-cont-dsh-7741";
 /** Id shared deliberately by an OpenCode row and the colliding DSH session. */
 const COLLIDING_ID = "us3-cont-shared-7741";
 const INBOUND = "The marbled-teal-3309 flag gates the continuity rollout.";
-const OUTBOUND = "DSH-side rule: continuity tests must not touch the user's shared store.";
+const OUTBOUND =
+	"DSH-side rule: continuity tests must not touch the user's shared store.";
 
 let db: ContextDatabase;
 let projectDir: string;
@@ -54,7 +61,9 @@ let disposeTools: () => void;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db") }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+	}))!;
 	expect(db).toBeTruthy();
 	projectDir = mkdtempSync(join(tmpdir(), "dsh-us3-cont-proj-"));
 	projectIdentity = resolveProjectIdentityForSession(projectDir)!;
@@ -68,7 +77,11 @@ beforeAll(async () => {
 		sessionId: () => DSH_SESSION,
 		projectDir,
 		protectedTags: 20,
-		promptSurfaceRuntime: createPromptSurfaceRuntime({ harness: "dsh", directory: projectDir, warn: () => {} }),
+		promptSurfaceRuntime: createPromptSurfaceRuntime({
+			harness: "dsh",
+			directory: projectDir,
+			warn: () => {},
+		}),
 		memoryEnabled: true,
 	});
 });
@@ -83,7 +96,9 @@ describe("OpenCode → DSH (V3 inbound)", () => {
 	test("ctx_search from the DSH session finds a memory seeded by an opencode-harness session", () => {
 		// Session row attributed to the OpenCode harness (written there).
 		getOrCreateSessionMeta(db, OC_SESSION);
-		db.prepare("UPDATE session_meta SET harness = 'opencode' WHERE session_id = ?").run(OC_SESSION);
+		db.prepare(
+			"UPDATE session_meta SET harness = 'opencode' WHERE session_id = ?",
+		).run(OC_SESSION);
 		insertMemory(db, {
 			projectPath: projectIdentity,
 			category: "CONFIG_VALUES",
@@ -131,7 +146,9 @@ describe("session-id collision probe", () => {
 	test("a DSH session id equal to an existing opencode session id separates by harness and stays scoped", async () => {
 		// Pre-existing OpenCode ownership of the id: session_meta row + its own
 		// session-scoped rows.
-		db.prepare("INSERT INTO session_meta (session_id, harness) VALUES (?, 'opencode')").run(COLLIDING_ID);
+		db.prepare(
+			"INSERT INTO session_meta (session_id, harness) VALUES (?, 'opencode')",
+		).run(COLLIDING_ID);
 		db.prepare(
 			"INSERT INTO pending_ops (session_id, tag_id, operation, queued_at, harness) VALUES (?, 1, 'drop', ?, 'opencode')",
 		).run(COLLIDING_ID, 1_700_000_000_000);
@@ -145,7 +162,9 @@ describe("session-id collision probe", () => {
 		const collided = mapping.upsert({ id: COLLIDING_ID });
 		expect(collided.dshSessionId).toBe(COLLIDING_ID);
 		const metaRows = db
-			.prepare("SELECT harness, COUNT(*) AS n FROM session_meta WHERE session_id = ? GROUP BY harness")
+			.prepare(
+				"SELECT harness, COUNT(*) AS n FROM session_meta WHERE session_id = ? GROUP BY harness",
+			)
 			.all(COLLIDING_ID) as Array<{ harness: string; n: number }>;
 		expect(metaRows).toEqual([{ harness: "opencode", n: 1 }]);
 
@@ -157,7 +176,11 @@ describe("session-id collision probe", () => {
 			sessionId: () => COLLIDING_ID,
 			projectDir,
 			protectedTags: 20,
-			promptSurfaceRuntime: createPromptSurfaceRuntime({ harness: "dsh", directory: projectDir, warn: () => {} }),
+			promptSurfaceRuntime: createPromptSurfaceRuntime({
+				harness: "dsh",
+				directory: projectDir,
+				warn: () => {},
+			}),
 		});
 		await callTool(collideHost, "ctx_note", {
 			action: "write",
@@ -170,16 +193,23 @@ describe("session-id collision probe", () => {
 		// Both harnesses' rows coexist under the same session id; the harness
 		// column is what separates them in the session-scoped write tables.
 		const ops = db
-			.prepare("SELECT tag_id, harness FROM pending_ops WHERE session_id = ? ORDER BY harness")
+			.prepare(
+				"SELECT tag_id, harness FROM pending_ops WHERE session_id = ? ORDER BY harness",
+			)
 			.all(COLLIDING_ID) as Array<{ tag_id: number; harness: string }>;
 		expect(ops).toEqual([
 			{ tag_id: 2, harness: "dsh" },
 			{ tag_id: 1, harness: "opencode" },
 		]);
 		const noteHarnesses = db
-			.prepare("SELECT DISTINCT harness FROM notes WHERE session_id = ? ORDER BY harness")
+			.prepare(
+				"SELECT DISTINCT harness FROM notes WHERE session_id = ? ORDER BY harness",
+			)
 			.all(COLLIDING_ID) as Array<{ harness: string }>;
-		expect(noteHarnesses.map((row) => row.harness)).toEqual(["dsh", "opencode"]);
+		expect(noteHarnesses.map((row) => row.harness)).toEqual([
+			"dsh",
+			"opencode",
+		]);
 		const indexRow = db
 			.prepare("SELECT harness FROM message_history_index WHERE session_id = ?")
 			.get(COLLIDING_ID) as { harness: string };
@@ -187,7 +217,9 @@ describe("session-id collision probe", () => {
 
 		// Scoped reads: each harness's session-scoped view sees only its rows…
 		const dshOnly = db
-			.prepare("SELECT tag_id FROM pending_ops WHERE session_id = ? AND harness = 'dsh'")
+			.prepare(
+				"SELECT tag_id FROM pending_ops WHERE session_id = ? AND harness = 'dsh'",
+			)
 			.all(COLLIDING_ID) as Array<{ tag_id: number }>;
 		expect(dshOnly).toEqual([{ tag_id: 2 }]);
 		// …and the project-scoped search lane still works for the colliding

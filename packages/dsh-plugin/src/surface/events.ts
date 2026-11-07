@@ -18,7 +18,12 @@
 import type { ContentBlock } from "@deepseek-ai/dsh-llm/types";
 
 /** Kinds of managed change the adapter can apply (contracts/dsh-plugin-surface.md). */
-export type McManagedChangeKind = "drop" | "fold" | "head-refresh" | "head-rebaseline" | "recover";
+export type McManagedChangeKind =
+	| "drop"
+	| "fold"
+	| "head-refresh"
+	| "head-rebaseline"
+	| "recover";
 
 export interface McManageStart {
 	/** Correlates to the shared-store decision record for this change. */

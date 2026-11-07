@@ -9,6 +9,7 @@
  * Descriptions/preset behavior come from the core prompt surface via
  * `promptSurfaceRuntime.resolveRegistration`; nothing here forks copy.
  */
+import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PromptSurfaceConfig } from "@magic-context/core/config/schema/magic-context";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage";
 import type { PromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
@@ -50,6 +51,20 @@ export interface RegisterMagicContextToolsDshOptions {
 	expandTools?: Record<string, string | false>;
 }
 
+/**
+ * Per-call session resolution (T018): the calling agent owns the session.
+ * `opts.sessionId` is only a test/double fallback; production passes a resolver
+ * that throws when a tool runs outside an agent turn.
+ */
+function sessionIdForCall(
+	opts: { readonly sessionId: () => string },
+	exec?: ToolRunContext,
+): string {
+	const agentId = exec?.agent?.id;
+	if (agentId !== undefined) return String(agentId);
+	return opts.sessionId();
+}
+
 export function registerMagicContextToolsDsh(
 	host: DshHost,
 	opts: RegisterMagicContextToolsDshOptions,
@@ -69,7 +84,7 @@ export function registerMagicContextToolsDsh(
 		host.registerTool(
 			createCtxSearchTool({
 				db: opts.db,
-				sessionId: opts.sessionId,
+				sessionId: (exec?: ToolRunContext) => sessionIdForCall(opts, exec),
 				projectDir: opts.projectDir,
 				memoryEnabled: opts.memoryEnabled,
 				gitCommitsEnabled: opts.gitCommitsEnabled,
@@ -80,7 +95,7 @@ export function registerMagicContextToolsDsh(
 		host.registerTool(
 			createCtxMemoryTool({
 				db: opts.db,
-				sessionId: opts.sessionId,
+				sessionId: (exec?: ToolRunContext) => sessionIdForCall(opts, exec),
 				projectDir: opts.projectDir,
 				memoryEnabled: opts.memoryEnabled,
 				surface,
@@ -89,7 +104,7 @@ export function registerMagicContextToolsDsh(
 		host.registerTool(
 			createCtxNoteTool({
 				db: opts.db,
-				sessionId: opts.sessionId,
+				sessionId: (exec?: ToolRunContext) => sessionIdForCall(opts, exec),
 				projectDir: opts.projectDir,
 				smartNotesEnabled: opts.smartNotesEnabled,
 				dreamerEnabled: opts.dreamerEnabled,
@@ -99,7 +114,7 @@ export function registerMagicContextToolsDsh(
 		host.registerTool(
 			createCtxExpandTool({
 				db: opts.db,
-				sessionId: opts.sessionId,
+				sessionId: (exec?: ToolRunContext) => sessionIdForCall(opts, exec),
 				expandTools: opts.expandTools,
 				surface,
 			}),
@@ -107,7 +122,7 @@ export function registerMagicContextToolsDsh(
 		host.registerTool(
 			createCtxReduceTool({
 				db: opts.db,
-				sessionId: opts.sessionId,
+				sessionId: (exec?: ToolRunContext) => sessionIdForCall(opts, exec),
 				protectedTags: opts.protectedTags,
 				surface,
 			}),

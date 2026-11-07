@@ -15,24 +15,56 @@
  *   `{ kind: 'reject' }` without calling `next()` short-circuits the step.
  */
 import { randomUUID } from "node:crypto";
-import { log } from "@magic-context/core/shared/logger";
 import type { Context } from "@deepseek-ai/cordis";
-import type { AgentRegistry, ModelSelection, PreStepDecision as AgentPreStepDecision } from "@deepseek-ai/dsh-agent";
-import type { SessionStore } from "@deepseek-ai/dsh-session";
-import type { Session } from "@deepseek-ai/dsh-session";
-import { appendPluginRecord, deriveEventMessage, isSurfaceEvent } from "@deepseek-ai/dsh-session";
-import type { SessionSurfaceSnapshot } from "@deepseek-ai/dsh-session-query";
-import { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
-import type { SessionEventMap } from "@deepseek-ai/dsh-session/types";
+import type {
+	PreStepDecision as AgentPreStepDecision,
+	AgentRegistry,
+	ModelSelection,
+} from "@deepseek-ai/dsh-agent";
+import { CommandId } from "@deepseek-ai/dsh-commands/brand";
+import { CompactionId } from "@deepseek-ai/dsh-compaction";
 import type { LlmRuntime } from "@deepseek-ai/dsh-llm";
 import { MessageId } from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
+import type { Session, SessionStore } from "@deepseek-ai/dsh-session";
+import {
+	appendPluginRecord,
+	deriveEventMessage,
+	isSurfaceEvent,
+} from "@deepseek-ai/dsh-session";
+import type { SessionEventMap } from "@deepseek-ai/dsh-session/types";
+import { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
+import type { SessionSurfaceSnapshot } from "@deepseek-ai/dsh-session-query";
 import type { TokenMeter } from "@deepseek-ai/dsh-token-meter";
-import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
-import type { DshHost, DshSession, PressureReading, PreStepDecision, PreStepInfo } from "./host.js";
-import type { McManageRecord, McReplacementContent } from "./surface/events.js";
-import type { DshLogMessageRecord } from "./surface/dsh-session-log.js";
+import type {
+	PostToolDecision,
+	ToolDefinition,
+	ToolExecutionResult,
+	ToolRunContext,
+} from "@deepseek-ai/dsh-tools";
+import { log } from "@magic-context/core/shared/logger";
+import type {
+	CompactionEndData,
+	CompactionLifecycleEvent,
+	CompactionStartData,
+	CompactionSummaryData,
+	DshHost,
+	DshSession,
+	PostToolInfo,
+	PostToolVerdict,
+	PreStepDecision,
+	PreStepInfo,
+	PressureReading,
+	RequestErrorInfo,
+	TodoState,
+} from "./host.js";
 import type { HistorianRoute } from "./sessions/historian.js";
+import type { DshLogMessageRecord } from "./surface/dsh-session-log.js";
+import type { McManageRecord, McReplacementContent } from "./surface/events.js";
+import {
+	MC_REWRITE_EVENT_TYPE,
+	mcRewriteProjection,
+} from "./surface/rewrite-projection.js";
 
 declare module "@deepseek-ai/dsh-llm" {
 	interface MessageSourceMap {
@@ -52,8 +84,12 @@ function wrapSession(ctx: Context, session: Session): DshSession {
 		header: {
 			id: session.id,
 			...(header.origin !== undefined ? { origin: header.origin } : {}),
-			...(header.parentSession !== undefined ? { parentSession: header.parentSession } : {}),
-			...(header.delegationDepth !== undefined ? { delegationDepth: header.delegationDepth } : {}),
+			...(header.parentSession !== undefined
+				? { parentSession: header.parentSession }
+				: {}),
+			...(header.delegationDepth !== undefined
+				? { delegationDepth: header.delegationDepth }
+				: {}),
 			...(header.cwd !== undefined ? { cwd: header.cwd } : {}),
 		},
 		surfaceNodes: () => [...session.surface.nodes],
@@ -71,31 +107,117 @@ function wrapSession(ctx: Context, session: Session): DshSession {
 			const first = nodes.indexOf(startSeq);
 			const last = nodes.indexOf(endSeq);
 			if (first >= 0 && last >= first) {
-				const begin = first === 0 && last > 0 && session.eventAt(nodes[0] as SessionSeq)?.type === "system/message" ? 1 : first;
+				const begin =
+					first === 0 &&
+					last > 0 &&
+					session.eventAt(nodes[0] as SessionSeq)?.type === "system/message"
+						? 1
+						: first;
 				const span = nodes.slice(begin, last + 1);
-				if (span.length === 0) throw new Error("surface replace: span covers only the protected system prompt");
+				if (span.length === 0)
+					throw new Error(
+						"surface replace: span covers only the protected system prompt",
+					);
 				start = span[0]!;
 				end = span[span.length - 1]!;
 				shadowed = span;
 			}
-			const event = session.append("user/message", {
-				id: MessageId(`mc-edit-${randomUUID()}`),
-				role: "user",
-				content: replacement,
-				source: { kind: "magic-context" },
-			}, {
-				surfaceOp: { op: "replace", startSeq: SessionSeq(start), endSeq: SessionSeq(end) },
-				sourceEventSeqs: shadowed.map((seq) => SessionSeq(seq)),
-			});
+			const event = session.append(
+				"user/message",
+				{
+					id: MessageId(`mc-edit-${randomUUID()}`),
+					role: "user",
+					content: replacement,
+					source: { kind: "magic-context" },
+				},
+				{
+					surfaceOp: {
+						op: "replace",
+						startSeq: SessionSeq(start),
+						endSeq: SessionSeq(end),
+					},
+					sourceEventSeqs: shadowed.map((seq) => SessionSeq(seq)),
+				},
+			);
 			return { replacementSeq: event.seq };
 		},
-		async appendNotice(content: McReplacementContent) {
-			const event = session.append("user/message", {
-				id: MessageId(`mc-notice-${randomUUID()}`),
-				role: "user",
+		async rewriteToolResult(seq: number, content: McReplacementContent) {
+			const original = session.eventAt(SessionSeq(seq));
+			if (original === undefined || original.type !== "tool/result") {
+				throw new Error(
+					`tool-result rewrite refused: surface seq ${String(seq)} is not a durable tool/result node`,
+				);
+			}
+			// Content-only: every other field is copied from the original event,
+			// which is exactly what `assertToolResultRewrite` verifies.
+			const event = session.append(
+				"tool/result",
+				{ ...original.data, message: { ...original.data.message, content } },
+				{
+					surfaceOp: {
+						op: "replace",
+						startSeq: SessionSeq(seq),
+						endSeq: SessionSeq(seq),
+					},
+					sourceEventSeqs: [SessionSeq(seq)],
+				},
+			);
+			return { replacementSeq: event.seq };
+		},
+		async rewriteUserMessage(seq: number, content: McReplacementContent) {
+			const original = session.eventAt(SessionSeq(seq));
+			if (original === undefined || original.type !== "user/message") {
+				throw new Error(
+					`user rewrite refused: surface seq ${String(seq)} is not a durable user/message node`,
+				);
+			}
+			const event = session.append(
+				"user/message",
+				{
+					id: MessageId(`mc-edit-${randomUUID()}`),
+					role: "user",
+					content,
+					source: { kind: "magic-context" },
+				},
+				{
+					surfaceOp: {
+						op: "replace",
+						startSeq: SessionSeq(seq),
+						endSeq: SessionSeq(seq),
+					},
+					sourceEventSeqs: [SessionSeq(seq)],
+				},
+			);
+			return { replacementSeq: event.seq };
+		},
+		async rewriteAssistantBody(seq: number, content: McReplacementContent) {
+			const original = session.eventAt(SessionSeq(seq));
+			if (original === undefined || original.type !== "assistant/message") {
+				throw new Error(
+					`assistant rewrite refused: surface seq ${String(seq)} is not a durable assistant/message node`,
+				);
+			}
+			// The projection event is ignorable and owner-scoped: a build
+			// without this plugin skips it and sees the original body.
+			const eventSeq = appendPluginRecord(session, MC_REWRITE_EVENT_TYPE, {
+				targetSeq: seq,
+				messageId: String(original.data.message.id),
 				content,
-				source: { kind: "magic-context" },
-			}, { surfaceOp: "append" });
+				ignorable: true,
+			});
+			return { eventSeq: Number(eventSeq) };
+		},
+		async appendTail(content: McReplacementContent) {
+			const event = session.append(
+				"user/message",
+				{
+					id: MessageId(`mc-notice-${randomUUID()}`),
+					role: "user",
+					content,
+					source: { kind: "magic-context" },
+				},
+				{ surfaceOp: "append" },
+			);
 			return { seq: event.seq };
 		},
 		async appendLogEvent(type, data) {
@@ -103,8 +225,72 @@ function wrapSession(ctx: Context, session: Session): DshSession {
 			// channel: the reopen validator admits only KNOWN_SESSION_EVENT_TYPES
 			// or ignorable envelopes, and out-of-repo types are outside the known
 			// set by construction (observed 0.2.2-rc.1).
-			const seq = appendPluginRecord(session, "plugin:magic-context/manage", { ...data, kind: type } as McManageRecord);
+			const seq = appendPluginRecord(session, "plugin:magic-context/manage", {
+				...data,
+				kind: type,
+			} as McManageRecord);
 			return { seq };
+		},
+		async appendCompactionEvent(lifecycle: CompactionLifecycleEvent) {
+			const { phase, data } = lifecycle;
+			// The start…end pair is the host's compaction lock and the summary
+			// event is the shadow-price anchor; both are log-only (no surfaceOp).
+			const id = CompactionId(data.compactionId);
+			if (phase === "start") {
+				const start = data as CompactionStartData;
+				const event = session.append("compaction/start", {
+					compactionId: id,
+					...(start.sourceCommandId !== undefined
+						? { sourceCommandId: CommandId(start.sourceCommandId) }
+						: {}),
+					turn: start.turn,
+				});
+				return { seq: event.seq };
+			}
+			if (phase === "summary") {
+				const summary = data as CompactionSummaryData;
+				// The host models "marked" vs "unmarked" summarizers as a
+				// discriminated union; our seam types the two optional fields
+				// independently, so the payload is narrowed here.
+				const event = session.append("compaction/summary", {
+					compactionId: id,
+					...(summary.sourceCommandId !== undefined
+						? { sourceCommandId: CommandId(summary.sourceCommandId) }
+						: {}),
+					summary: summary.summary,
+					shadowedRange: {
+						start: SessionSeq(summary.shadowedRange.start),
+						end: SessionSeq(summary.shadowedRange.end),
+					},
+					shadowedSeqs: summary.shadowedSeqs.map((seq) => SessionSeq(seq)),
+					shadowedTokenCount: summary.shadowedTokenCount,
+					provider: summary.provider,
+					model: summary.model,
+					...(summary.maxTokens !== undefined
+						? { maxTokens: summary.maxTokens }
+						: {}),
+					...(summary.usage !== undefined
+						? { usage: summary.usage as never }
+						: {}),
+					...(summary.rawOutput !== undefined
+						? { rawOutput: summary.rawOutput }
+						: {}),
+					...(summary.llmStreamCall === true
+						? { llmStreamCall: true as const }
+						: {}),
+				} as never);
+				return { seq: event.seq };
+			}
+			const end = data as CompactionEndData;
+			const event = session.append("compaction/end", {
+				compactionId: id,
+				...(end.sourceCommandId !== undefined
+					? { sourceCommandId: CommandId(end.sourceCommandId) }
+					: {}),
+				turn: end.turn,
+				...(end.error !== undefined ? { error: end.error } : {}),
+			});
+			return { seq: event.seq };
 		},
 		async flush() {
 			await ctx.sessions.flush(session);
@@ -121,11 +307,21 @@ export interface CordisHostOptions {
 	 * step fail-closed, FR-004).
 	 */
 	readonly sessionLog?: CordisSessionLogSource;
-	/** Sees each step's model selection; feeds the historian route (host-owned model). */
-	readonly observeModel?: (selection: ModelSelection | undefined) => void;
+	/**
+	 * Sees each step's model selection; feeds the historian route (host-owned
+	 * model) and the mural capability (image input, FR-006). `imageInput` is
+	 * the routed model's advertised modality — unknown routes report false.
+	 */
+	readonly observeModel?: (
+		selection: ModelSelection | undefined,
+		imageInput: boolean,
+	) => void;
 }
 
-export function createCordisHost(ctx: Context, options: CordisHostOptions = {}): DshHost {
+export function createCordisHost(
+	ctx: Context,
+	options: CordisHostOptions = {},
+): DshHost {
 	const { observeModel } = options;
 	const source = options.sessionLog;
 	const prefetch = source
@@ -152,16 +348,22 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 	return {
 		ctx,
 		getSession,
+		todoState(sessionId: string): TodoState | undefined {
+			return source?.todoState(sessionId);
+		},
 		pressure(sessionId: string): PressureReading | undefined {
 			const agent = ctx.agents.get(SessionId(sessionId));
 			if (!agent) return undefined;
-			const meter: TokenMeter | undefined = (ctx as { tokenMeter?: TokenMeter }).tokenMeter;
+			const meter: TokenMeter | undefined = (ctx as { tokenMeter?: TokenMeter })
+				.tokenMeter;
 			if (!meter) return undefined;
 			const projection = meter.contextPressure(agent.session);
 			const routed = routedWindows.get(sessionId);
 			const contextWindow = routed ?? projection.contextWindow;
 			return {
-				...(projection.pressureTokens !== undefined ? { pressureTokens: projection.pressureTokens } : {}),
+				...(projection.pressureTokens !== undefined
+					? { pressureTokens: projection.pressureTokens }
+					: {}),
 				...(contextWindow !== undefined ? { contextWindow } : {}),
 			};
 		},
@@ -180,11 +382,24 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 			};
 			return ctx.tools.register(wrapped);
 		},
-		onPreStep(listener: (info: PreStepInfo) => PreStepDecision | Promise<PreStepDecision>): () => void {
+		registerRewriteProjection(): () => void {
+			// Registered on the session store the moment the plugin mounts, so
+			// every live session and every restored one derives the rewrite.
+			const dispose =
+				ctx.sessions.registerMessageProjection(mcRewriteProjection);
+			return () => {
+				void dispose();
+			};
+		},
+		onPreStep(
+			listener: (
+				info: PreStepInfo,
+			) => PreStepDecision | Promise<PreStepDecision>,
+		): () => void {
 			return ctx.on("agent/pre-step", (payload, next) =>
 				(async (): Promise<AgentPreStepDecision> => {
 					const sessionId = payload.agent.session.id;
-					observeModel?.(payload.modelSelection);
+					let imageInput = false;
 					if (payload.modelSelection !== undefined) {
 						// Resolve the routed model's capacity for band pricing
 						// (see routedWindows). Best effort: an unresolved route
@@ -195,15 +410,20 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 								model: payload.modelSelection.model,
 							});
 							const capacity = prepared.context?.contextWindow;
-							if (capacity !== undefined) routedWindows.set(sessionId, capacity);
+							if (capacity !== undefined)
+								routedWindows.set(sessionId, capacity);
 							else routedWindows.delete(sessionId);
-							log(`[dsh-magic-context] routed window for ${sessionId}: ${payload.modelSelection.provider}/${payload.modelSelection.model} ⇒ ${capacity ?? "undisclosed"}`);
+							imageInput = prepared.inputModalities?.includes("image") === true;
+							log(
+								`[dsh-magic-context] routed window for ${sessionId}: ${payload.modelSelection.provider}/${payload.modelSelection.model} ⇒ ${capacity ?? "undisclosed"}`,
+							);
 						} catch {
 							routedWindows.delete(sessionId);
 						}
 					} else {
 						routedWindows.delete(sessionId);
 					}
+					observeModel?.(payload.modelSelection, imageInput);
 					if (source !== undefined) {
 						// The pass bridge reads the snapshot synchronously; refresh
 						// it here, the one async moment before every listener. A
@@ -212,9 +432,11 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 						try {
 							await source.prefetch(sessionId);
 						} catch (error) {
-							log(`[dsh-magic-context] session-log prefetch failed for ${sessionId}; refusing step fail-closed: ${error instanceof Error ? error.message : String(error)}`);
+							log(
+								`[dsh-magic-context] session-log prefetch failed for ${sessionId}; refusing step fail-closed: ${error instanceof Error ? error.message : String(error)}`,
+							);
 							try {
-								getSession(sessionId)?.appendNotice([
+								getSession(sessionId)?.appendTail([
 									{
 										type: "text",
 										text: "Magic Context could not read the session log before this step and refused it (fail-closed): the pass never runs on an unverifiable history.",
@@ -226,9 +448,74 @@ export function createCordisHost(ctx: Context, options: CordisHostOptions = {}):
 							return { kind: "reject" };
 						}
 					}
-					const decision = await listener({ sessionId, turn: payload.turn, step: payload.step });
+					const decision = await listener({
+						sessionId,
+						turn: payload.turn,
+						step: payload.step,
+					});
 					return decision === "reject" ? { kind: "reject" } : next();
-				})());
+				})(),
+			);
+		},
+		onRequestError(
+			listener: (info: RequestErrorInfo) => boolean | Promise<boolean>,
+		): () => void {
+			return ctx.on("agent/request-error", (payload, next) =>
+				(async () => {
+					const handled = await listener({
+						sessionId: payload.agent.session.id,
+						turn: payload.turn,
+						step: payload.step,
+						provider: payload.provider,
+						failure: payload.failure,
+					});
+					if (handled) return { kind: "retry" } as const;
+					return next();
+				})(),
+			);
+		},
+		onPostToolExecute(
+			listener: (
+				info: PostToolInfo,
+			) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>,
+		): () => void {
+			return ctx.on("tools/post-execute", (exec, result, next) =>
+				(async () => {
+					const decision = await next();
+					const sessionId = exec.agent?.session.id;
+					if (sessionId === undefined || decision.kind !== "accept")
+						return decision;
+					// The verdict replaces the result's content BEFORE
+					// materialization, so the rewrite is what the session logs —
+					// the durable half of the post-execute channel.
+					const verdict = await listener({
+						sessionId,
+						toolName: exec.name,
+						...(exec.rootCallId !== undefined
+							? { toolCallId: String(exec.rootCallId) }
+							: {}),
+						text: textOfDecision(decision, result),
+					});
+					if (verdict === undefined) return decision;
+					const content = verdict.content ?? contentOfDecision(decision);
+					return {
+						kind: "accept",
+						...(content !== undefined
+							? { content }
+							: { value: valueOfDecision(decision) }),
+						...(verdict.additionalContext !== undefined
+							? {
+									additionalContexts: [
+										...(decision.additionalContexts ?? []),
+										{ role: "user", content: verdict.additionalContext },
+									],
+								}
+							: decision.additionalContexts !== undefined
+								? { additionalContexts: decision.additionalContexts }
+								: {}),
+					} as PostToolDecision;
+				})(),
+			);
 		},
 	};
 }
@@ -247,16 +534,24 @@ export type { AgentRegistry };
  * model would see.
  */
 export interface CordisSessionLogSource {
-	readonly read: (dshSessionId: string) => readonly DshLogMessageRecord[] | undefined;
+	readonly read: (
+		dshSessionId: string,
+	) => readonly DshLogMessageRecord[] | undefined;
 	prefetch(dshSessionId: string): Promise<void>;
+	/** Latest `todo/write` state seen while projecting the log (T034). */
+	todoState(dshSessionId: string): TodoState | undefined;
 }
 
-export function createCordisSessionLogSource(ctx: Context): CordisSessionLogSource {
+export function createCordisSessionLogSource(
+	ctx: Context,
+): CordisSessionLogSource {
 	const cache = new Map<string, readonly DshLogMessageRecord[]>();
+	const todos = new Map<string, TodoState>();
 	return {
 		read: (dshSessionId) => cache.get(dshSessionId),
 		async prefetch(dshSessionId: string): Promise<void> {
-			const snapshot: SessionSurfaceSnapshot = await ctx.sessionQuery.readSurface(SessionId(dshSessionId));
+			const snapshot: SessionSurfaceSnapshot =
+				await ctx.sessionQuery.readSurface(SessionId(dshSessionId));
 			const records: DshLogMessageRecord[] = [];
 			for (const event of snapshot.events) {
 				if (!isSurfaceEvent(event)) continue;
@@ -269,19 +564,66 @@ export function createCordisSessionLogSource(ctx: Context): CordisSessionLogSour
 				const message = deriveEventMessage(event);
 				if (message === null) continue;
 				const text = message.content
-					.filter((block): block is { type: "text"; text: string } => block.type === "text")
+					.filter(
+						(block): block is { type: "text"; text: string } =>
+							block.type === "text",
+					)
 					.map((block) => block.text)
 					.join("\n");
+				const replayBlocks = (
+					message.source as {
+						replayState?: {
+							blocks?: readonly { type: string; signature?: string }[];
+						};
+					}
+				).replayState?.blocks;
 				records.push({
 					seq: Number(event.seq),
 					messageId: String(message.id),
 					role: message.role,
 					text,
 					createdAt: event.time,
+					blocks: message.content,
+					...(message.role === "tool"
+						? { toolCallId: String(message.toolCallId) }
+						: {}),
+					...(replayBlocks?.some(
+						(block) =>
+							block.type === "reasoning" && typeof block.signature === "string",
+					)
+						? { reasoningSigned: true }
+						: {}),
+					...(message.role === "tool" && message.isError === true
+						? { isError: true }
+						: {}),
 				});
 			}
 			cache.set(dshSessionId, records);
+			// `todo/write` is log-only (no surface), so it never reaches the
+			// message projection; capture the newest one here while the snapshot
+			// is already in hand.
+			for (const event of snapshot.events as readonly {
+				type: string;
+				seq: number;
+				data?: unknown;
+			}[]) {
+				if (event.type !== "todo/write") continue;
+				const data = event.data as { items?: unknown } | undefined;
+				const items = Array.isArray(data?.items)
+					? (data.items as { content?: unknown; status?: unknown }[])
+					: [];
+				todos.set(dshSessionId, {
+					seq: Number(event.seq),
+					items: items
+						.filter((item) => typeof item.content === "string")
+						.map((item) => ({
+							content: String(item.content),
+							status: String(item.status ?? "pending"),
+						})),
+				});
+			}
 		},
+		todoState: (dshSessionId: string) => todos.get(dshSessionId),
 	};
 }
 
@@ -292,13 +634,20 @@ export function createCordisSessionLogSource(ctx: Context): CordisSessionLogSour
  * the next fold without remounting.
  */
 export function createCordisHistorianRoute(): {
-	readonly observe: (selection: ModelSelection | undefined) => void;
+	readonly observe: (
+		selection: ModelSelection | undefined,
+		imageInput: boolean,
+	) => void;
 	readonly route: HistorianRoute;
 } {
 	let current: ModelSelection | undefined;
+	let imageInput = false;
 	return {
-		observe: (selection) => {
-			if (selection !== undefined) current = selection;
+		observe: (selection, modalities) => {
+			if (selection !== undefined) {
+				current = selection;
+				imageInput = modalities;
+			}
 		},
 		route: {
 			get provider(): string {
@@ -307,6 +656,38 @@ export function createCordisHistorianRoute(): {
 			get model(): string {
 				return current?.model ?? "";
 			},
+			get imageInput(): boolean {
+				return imageInput;
+			},
 		},
 	};
+}
+
+/** Flatten an accepted decision's content for the observer (text only). */
+function textOfDecision(
+	decision: PostToolDecision,
+	result: Readonly<ToolExecutionResult>,
+): string {
+	const content = contentOfDecision(decision) ?? result.content;
+	return (content ?? [])
+		.map((block) => (block.type === "text" ? block.text : ""))
+		.join("\n");
+}
+
+/** The content an accepted decision carries (a `value` decision has none). */
+function contentOfDecision(
+	decision: PostToolDecision,
+): McReplacementContent | undefined {
+	return decision.kind === "accept" && "content" in decision
+		? (decision.content as McReplacementContent | undefined)
+		: undefined;
+}
+
+/** The value an accepted decision carries, for pass-through of value-form results. */
+function valueOfDecision(decision: PostToolDecision): never {
+	return (
+		decision.kind === "accept" && "value" in decision
+			? decision.value
+			: undefined
+	) as never;
 }

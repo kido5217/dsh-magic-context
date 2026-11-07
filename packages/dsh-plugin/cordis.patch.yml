@@ -4,3 +4,10 @@
 - insert:
     - id: dsh-magic-context
       name: "@cortexkit/dsh-magic-context"
+
+# Magic Context owns folding on the sessions it manages. Two compaction engines in one
+# context is a contract violation (docs/subsystems/compaction.md), so the base bundle's
+# native engine is disabled here. A profile may still override this row by id; setup and
+# doctor detect that and refuse to claim a healthy install.
+- id: compaction-basic
+  disabled: true

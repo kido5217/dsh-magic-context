@@ -13,7 +13,19 @@
 import { Context } from "@deepseek-ai/cordis";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
 import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
-import type { DshHost, DshSession, DshSessionHeaderFacts, PressureReading, PreStepDecision, PreStepInfo } from "../src/host.js";
+import type {
+	DshHost,
+	DshSession,
+	DshSessionHeaderFacts,
+	CompactionLifecycleEvent,
+	PostToolInfo,
+	PostToolVerdict,
+	PressureReading,
+	PreStepDecision,
+	PreStepInfo,
+	RequestErrorInfo,
+	TodoState,
+} from "../src/host.js";
 import type { McReplacementContent } from "../src/surface/events.js";
 
 export interface FakeLogEntry {
@@ -28,6 +40,8 @@ export class FakeMcSession implements DshSession {
 	private nextSeq: number;
 	readonly id: string;
 	flushCount = 0;
+	/** Compaction lifecycle seqs appended (T072 evidence). */
+	readonly compactionSeqs: number[] = [];
 
 	constructor(
 		readonly header: DshSessionHeaderFacts,
@@ -65,7 +79,27 @@ export class FakeMcSession implements DshSession {
 		return { replacementSeq };
 	}
 
-	async appendNotice(_content: McReplacementContent): Promise<{ seq: number }> {
+	async rewriteToolResult(seq: number, _content: McReplacementContent): Promise<{ replacementSeq: number }> {
+		if (!this.surface.includes(seq)) throw new Error(`tool-result rewrite refused: seq ${seq} is not a current surface node`);
+		const replacementSeq = this.nextSeq++;
+		this.surface = this.surface.map((node) => (node === seq ? replacementSeq : node));
+		return { replacementSeq };
+	}
+
+	async rewriteUserMessage(seq: number, _content: McReplacementContent): Promise<{ replacementSeq: number }> {
+		if (!this.surface.includes(seq)) throw new Error(`user rewrite refused: seq ${seq} is not a current surface node`);
+		const replacementSeq = this.nextSeq++;
+		this.surface = this.surface.map((node) => (node === seq ? replacementSeq : node));
+		return { replacementSeq };
+	}
+
+	async rewriteAssistantBody(seq: number, _content: McReplacementContent): Promise<{ eventSeq: number }> {
+		if (!this.surface.includes(seq)) throw new Error(`assistant rewrite refused: seq ${seq} is not a current surface node`);
+		const eventSeq = this.nextSeq++;
+		return { eventSeq };
+	}
+
+	async appendTail(_content: McReplacementContent): Promise<{ seq: number }> {
 		const seq = this.nextSeq++;
 		this.surface.push(seq);
 		return { seq };
@@ -74,6 +108,12 @@ export class FakeMcSession implements DshSession {
 	async appendLogEvent(type: "mc/manage-start" | "mc/manage-end", data: Record<string, unknown>): Promise<{ seq: number }> {
 		const seq = this.nextSeq++;
 		this.logEntries.push({ type, data, seq });
+		return { seq };
+	}
+
+	async appendCompactionEvent(_event: CompactionLifecycleEvent): Promise<{ seq: number }> {
+		const seq = this.nextSeq++;
+		this.compactionSeqs.push(seq);
 		return { seq };
 	}
 
@@ -134,6 +174,22 @@ export class McHost implements DshHost {
 		return () => {
 			this.preStepListeners.delete(listener);
 		};
+	}
+
+	todoState(_sessionId: string): TodoState | undefined {
+		return undefined;
+	}
+
+	onPostToolExecute(_listener: (info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>): () => void {
+		return () => {};
+	}
+
+	onRequestError(_listener: (info: RequestErrorInfo) => boolean | Promise<boolean>): () => void {
+		return () => {};
+	}
+
+	registerRewriteProjection(): () => void {
+		return () => {};
 	}
 }
 

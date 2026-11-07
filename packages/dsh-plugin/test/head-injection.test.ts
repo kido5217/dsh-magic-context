@@ -16,6 +16,7 @@ import { appendCompartments } from "@magic-context/core/features/magic-context/c
 import { insertMemory } from "@magic-context/core/features/magic-context/memory/storage-memory";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import { mountAdapter, type AdapterHandle } from "../src/index.js";
+import { readHeadCursors } from "../src/surface/head-cursors.js";
 import type { DshLogMessageRecord } from "../src/surface/dsh-session-log.js";
 import { TestDshHost } from "./double.js";
 
@@ -73,16 +74,22 @@ describe("head renders the injection pipeline (T042)", () => {
 		expect(head).toBeDefined();
 		expect(head!.text).toContain("<project-memory>");
 		expect(head!.text).toContain("kestrel at dusk");
-		// Temporal awareness: dates come from the durable log's own timestamps.
-		expect(head!.text).toContain('start-date="2026-01-10" end-date="2026-01-12"');
+		// Temporal awareness: dates come from the durable log's own timestamps,
+		// rendered by the SHARED renderer in its native heading format.
+		expect(head!.text).toContain("2026-01-10→12");
 		expect(head!.text).toContain("First epoch");
 
-		// The rendered-id capture drives ctx_search hard-filtering (visible ids).
-		const row = db
-			.prepare("SELECT memory_block_ids, memory_block_count FROM session_meta WHERE session_id = ?")
-			.get("s-head") as { memory_block_ids: string; memory_block_count: number };
-		expect(JSON.parse(row.memory_block_ids)).toContain(memory.id);
-		expect(row.memory_block_count).toBe(1);
+		// The rendered-id capture drives ctx_search hard-filtering (visible
+		// ids): the core upgrade-identity manifest, read back via the cursor
+		// module (the retired `memory_block_ids` column is no longer written).
+		const cursors = readHeadCursors(db, "s-head", {
+			projectPath: identity,
+			projectDirectory: projectDir,
+			memoryEnabled: true,
+		});
+		expect(cursors).toBeDefined();
+		expect(cursors!.renderedMemoryIds).toContain(memory.id);
+		expect(cursors!.markers.maxMemoryId).toBe(memory.id);
 
 		await handle.dispose();
 		handle = undefined;

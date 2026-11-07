@@ -14,6 +14,7 @@ import {
 	defineTool,
 	type ParameterSchemaSpec,
 	type ToolDefinition,
+	type ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
 import { getLastCompartmentEndMessage } from "@magic-context/core/features/magic-context/compartment-storage";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage";
@@ -43,7 +44,7 @@ import {
 
 export interface CtxExpandToolDshDeps {
 	db: ContextDatabase;
-	sessionId: () => string;
+	sessionId: (exec?: ToolRunContext) => string;
 	expandTools?: Record<string, string | false>;
 	surface: ToolSurface;
 }
@@ -89,7 +90,7 @@ export function createCtxExpandTool(
 		),
 		parameters,
 		output: stringToolOutput(),
-		async execute(rawArgs) {
+		async execute(rawArgs, exec) {
 			const args = unwrapImitatedReducedArgs(
 				rawArgs as Record<string, unknown>,
 				["tag", "message", "start"],
@@ -100,7 +101,7 @@ export function createCtxExpandTool(
 					message: "number",
 				},
 			);
-			const sessionId = deps.sessionId();
+			const sessionId = deps.sessionId(exec);
 			if (!hasRawMessageProvider(sessionId)) {
 				throw new Error(
 					"Error: this session has no raw-history source registered yet; retry ctx_expand shortly.",
