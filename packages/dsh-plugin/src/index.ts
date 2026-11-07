@@ -412,7 +412,19 @@ export async function apply(
 		mmapSizeMb: mmap_size_mb,
 	});
 	const dbPath = join(getMagicContextStorageDir(), "context.db");
-	const db = await openDatabaseAsync({ dbPath, nativeTurnDeadlines: true });
+	// A fatal open/migration error is deterministic inoperability exactly like
+	// an unavailable store: it must reach the fail-closed arm below, not
+	// escape into the host's plugin-load error handling (which would swallow
+	// it and run the session unmanaged).
+	let db: Awaited<ReturnType<typeof openDatabaseAsync>>;
+	try {
+		db = await openDatabaseAsync({ dbPath, nativeTurnDeadlines: true });
+	} catch (error) {
+		log(
+			`[dsh-magic-context] shared store could not be opened: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		db = null;
+	}
 	if (!db) {
 		// F-06: with the fail-closed key armed (default), deterministic
 		// inoperability is loud — every primary step is refused with a

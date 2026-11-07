@@ -14,16 +14,22 @@
  * is the first materialization inside run 1. On the served side the same
  * claim reads: exactly one baseline node, byte-identical across every
  * request of every run, and the head slot resumed turns carry is the
- * placeholder or a delta — never a re-sent baseline.
+ * placeholder or a delta — never a re-sent baseline. Turn 2 additionally
+ * carries a FORCED managed pass: the parent queues a drop (the ctx_reduce
+ * pending-op queue) on the run-1 tool result, so the resumed child must run
+ * a real management pass — apply the drop, serve the `[dropped §`
+ * placeholder — and the frozen baseline still survives it untouched.
  *
  * Half 2 — THE TICK DOES NOT BLOCK A TURN. Two honest, deterministic
  * measurements plus one live overlap:
  *  (a) in-process management pass: `mountAdapter` on the host double over a
  *      realistic history (48 seeded messages with real text entropy, 4
  *      pre-baseline compartments, project memories) — the same pre-step pass
- *      the live child runs, timed directly. BOUND: every steady-state pass
- *      and the delta-refresh pass complete under 200 ms (generous: observed
- *      single-digit ms; the bound absorbs CI jitter).
+ *      the live child runs, timed directly. BOUND: the median of the five
+ *      timed passes (cold, three steady, one delta-refresh) under 200 ms,
+ *      and every steady/refresh pass individually under 200 ms (measured
+ *      ≈130 ms, dominated by the per-pass projection + history index over
+ *      the seeded history; the bound leaves headroom for CI jitter).
  *  (b) the maintenance clock's tick with no due work on the seeded store
  *      (the same MaintenanceScheduler.runTick the dreamer lane mounts).
  *      BOUND: under 200 ms per tick.
@@ -32,12 +38,29 @@
  *      mid-turn and the full turn wall clock must stay under a generous
  *      90 s bound — a turn with the lane mounted behaves like a turn without.
  *
+ * Half 3 — FAIL-CLOSED ON A STORE OUTAGE (quickstart V9 scenario, the
+ * mid-session sibling of us1-fail-closed): with the session open, the shared
+ * store becomes unusable (a schema_migrations row newer than this binary
+ * makes the open return null — the state the fail_closed_blocking arm
+ * covers). The next turn must be REFUSED: zero provider requests, the
+ * refusal logged, no normal completion; after the store recovers the session
+ * resumes cleanly and the case-1 frozen baseline is still intact.
+ *
  * Evidence is written DURING the tests to the sidecar directory
  * (specs/002-dsh-full-parity/gate-evidence/v9-cache/): the live home wipes
  * on dispose, so nothing may be sampled afterwards.
  */
+
+import { Database as RawSqlite } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
@@ -55,6 +78,7 @@ import {
 	closeDatabase,
 	openDatabaseAsync,
 } from "@magic-context/core/features/magic-context/storage-db";
+import { queuePendingOp } from "@magic-context/core/features/magic-context/storage-ops";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { type AdapterHandle, mountAdapter } from "../src/index.js";
 import { MaintenanceScheduler } from "../src/maintenance/scheduler.js";
@@ -78,10 +102,13 @@ let memoryId = 0;
 let sessionId = "";
 const handles: AdapterHandle[] = [];
 const DAY = 86_400_000;
+/** Case-1's final frozen snapshot, re-checked after the outage case. */
+let frozenMeta: MetaSnapshot | undefined;
 
 /** Sidecar evidence dir (outside the repo tree; survives the live-home wipe). */
 const evidenceDir = resolve(
 	import.meta.dir,
+	"..",
 	"..",
 	"..",
 	"..",
@@ -119,6 +146,7 @@ interface MetaSnapshot {
 	readonly cachedM0Bytes: number;
 	readonly cachedM0Sha256: string | null;
 	readonly cursors: Record<string, unknown>;
+	readonly tokens: Record<string, number>;
 	readonly systemPromptHash: string | null;
 }
 
@@ -148,8 +176,35 @@ function snapshotMeta(atSessionId: string): MetaSnapshot {
 			projectIdentity: state.cachedM0ProjectIdentity,
 			muralHash: state.cachedM0MuralHash,
 		},
+		tokens: {
+			systemPromptTokens: state.systemPromptTokens,
+			conversationTokens: state.conversationTokens,
+			toolCallTokens: state.toolCallTokens,
+			lastInputTokens: state.lastInputTokens,
+		},
 		systemPromptHash: (state.systemPromptHash as string | null) ?? null,
 	};
+}
+
+/**
+ * True when a request from `from` carries the canonical drop notice: a
+ * message whose content BEGINS with the `[dropped §` placeholder (the
+ * baseline's guidance prose mentions the marker mid-text, so only a
+ * message that starts with it is the rewritten node). DSH tags history
+ * nodes as message tags, so a managed drop lands as the canonical
+ * user-role reduction notice (the tool-message rewrite live-v1 asserts is
+ * the tool-tag lane).
+ */
+function servedDropNotice(from: number): boolean {
+	return provider.requests
+		.slice(from)
+		.some((request) =>
+			((request.body["messages"] ?? []) as { content?: unknown }[]).some(
+				(message) =>
+					typeof message.content === "string" &&
+					message.content.startsWith("[dropped §"),
+			),
+		);
 }
 
 function contentText(message: Record<string, unknown>): string {
@@ -195,7 +250,11 @@ function headsFromLatestRequest(from: number): ServedHeads {
 			if (isBaselineText(text)) {
 				baselineCopies += 1;
 				baseline = text;
+				continue;
 			}
+			// The baseline's temporal-awareness guidance names the delta tag
+			// in prose; only a non-baseline message carrying the tag IS the
+			// delta node.
 			if (text.includes("<session-history-since>")) {
 				deltaCopies += 1;
 				delta = text;
@@ -279,6 +338,14 @@ beforeAll(async () => {
 	);
 	identityB = resolveProjectIdentityForSession(projB)!;
 	const store = await openStore();
+	// The baseline only materializes when it has something to say: give
+	// project A one static project memory (no writer touches it between
+	// turns, so any cursor movement across resumes can only be a rebuild).
+	insertMemory(store, {
+		projectPath: resolveProjectIdentityForSession(projA)!,
+		category: "PROJECT_RULES",
+		content: "The budget gate keeps the frozen baseline frozen.",
+	});
 	const first = insertMemory(store, {
 		projectPath: identityB,
 		category: "PROJECT_RULES",
@@ -298,35 +365,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	for (const handle of handles) await handle.dispose();
-	writeFileSync(
-		join(evidenceDir, "README.md"),
-		`# V9 cache/perf budget — evidence (T091)
-
-Mechanism: Magic Context materializes the session baseline (m[0]) exactly
-once and freezes the state it was rendered from into the
-\`session_meta.cached_m0_*\` cursors (memory/mutation watermarks, compartment
-sequence, docs hash, profile version, and a \`cached_m0_materialized_at\`
-stamp written in the same transaction as the rendered bytes). Every later
-pass re-renders only the small volatile delta against those frozen cursors;
-the baseline is re-rendered — and the cursors re-stamped — only when a
-cursor actually moved (a fold, a new memory, changed docs). Operationally,
-"no extra rebuilds" means: across resumed turns with no knowledge writes,
-the cached bytes (sha256), the whole cursor set, and
-\`cached_m0_materialized_at\` are byte-identical between turns, and the
-served conversation carries exactly one baseline node whose bytes never
-change — so the provider-side prompt cache for the prefix keeps hitting and
-resumes cost a placeholder/delta, never a re-sent baseline. "Non-blocking
-tick" means the in-process work a turn pays for — the pre-step management
-pass and the maintenance scheduler's minute tick — is bounded work on the
-frozen state (here under 200 ms per pass on a 48-message seeded history),
-and the heavy background dream tasks run on the lane's own clock, observed
-overlapping an open turn without extending its wall clock beyond budget.
-
-Files: \`v9-evidence.json\` — measured pass/tick/turn timings and the
-per-turn cursor snapshots (written during the test; the live home wipes on
-dispose). Generated by \`test/live-v9-budget.test.ts\`.
-`,
-	);
+	// Evidence JSON was written DURING the tests (the live home wipes on
+	// dispose); the sidecar README.md is authored prose, not generated.
 	home?.dispose();
 	provider.stop();
 	await closeDatabase();
@@ -365,24 +405,10 @@ describe("V9 budget", () => {
 			first.events.find((event) => event["type"] === "session")?.["sessionId"],
 		);
 		expect(sessionId).not.toBe("undefined");
-		process.stderr.write(
-			`DEBUG v9 child stderr tail: ${first.stderr.slice(-700).replaceAll("\n", " | ")}\n`,
-		);
 
 		await openStore();
 		const meta1 = snapshotMeta(sessionId);
 		const heads1 = headsFromLatestRequest(turn1Start);
-		process.stderr.write(
-			`DEBUG v9 session=${sessionId} rows=${JSON.stringify(
-				db
-					.prepare(
-						"SELECT session_id, cached_m0_materialized_at AS at, length(cached_m0_bytes) AS n FROM session_meta",
-					)
-					.all(),
-			)} tags=${JSON.stringify(
-				db.prepare("SELECT count(*) AS n FROM tags").get(),
-			)} baselineLen=${heads1.baseline.length} deltaLen=${heads1.delta.length}\n`,
-		);
 		await closeDatabase();
 		// The legitimate (and only) rebuild: the first materialization.
 		expect(
@@ -392,22 +418,82 @@ describe("V9 budget", () => {
 		expect(meta1.cursors.materializedAt).not.toBeNull();
 		expect(heads1.baseline).toContain("<project-memory>");
 
-		// Turn 2: plain resume, no knowledge writes between the turns.
+		// Force the MANAGED pass on the resumed turn: the parent stamps a
+		// drop on the run-1 tool result through the same pending-op queue an
+		// agent's ctx_reduce uses. The resumed child's management pass must
+		// apply it (a real managed change mid-resume, history rewritten with
+		// the canonical placeholder) — and the frozen baseline must still
+		// survive it untouched.
+		await openStore();
+		const activeTags = db
+			.prepare(
+				"SELECT tag_number, message_id, type FROM tags WHERE session_id = ? AND status = 'active' ORDER BY tag_number ASC",
+			)
+			.all(sessionId) as {
+			tag_number: number;
+			message_id: string;
+			type: string;
+		}[];
+		const dropTarget =
+			activeTags.find((tag) => tag.type === "tool") ?? activeTags[0];
+		expect(
+			dropTarget,
+			`run 1 tagged the tool result (tags: ${JSON.stringify(activeTags)})`,
+		).toBeDefined();
+		queuePendingOp(db, sessionId, dropTarget!.tag_number, "drop");
+		await closeDatabase();
+		expect(servedDropNotice(0)).toBe(false);
+
+		// Turn 2: resume with a tool call (two steps ⇒ the pass runs with the
+		// host head present) + the queued drop. No knowledge writes between
+		// the turns, so any cursor movement can only be a rebuild.
 		const turn2Start = provider.requests.length;
-		provider.script([{ text: "second answer", promptTokens: 600 }]);
-		const second = await home!.runHeadlessAsync("continue", {
-			cwd: projA,
-			args: ["--session-id", sessionId],
-			env: mockProviderEnv(),
-		});
+		provider.script([
+			{
+				toolCalls: [
+					{
+						name: "read",
+						arguments: JSON.stringify({ path: join(projA, "file.txt") }),
+					},
+				],
+				promptTokens: 600,
+			},
+			{ text: "second answer", promptTokens: 600 },
+		]);
+		const second = await home!.runHeadlessAsync(
+			"read file.txt again and continue",
+			{
+				cwd: projA,
+				args: ["--session-id", sessionId],
+				env: mockProviderEnv(),
+			},
+		);
 		expect(
 			second.status,
 			`child failed: ${second.stderr.slice(0, 1_200)}`,
 		).toBe(0);
+		// The managed pass ran on the resumed turn: the dropped history node
+		// reaches the model as the canonical reduction notice (the managed
+		// change actually applied, same canonical marker as the V1 live gate).
 		await openStore();
 		const meta2 = snapshotMeta(sessionId);
 		const heads2 = headsFromLatestRequest(turn2Start);
+		const tagRows = db
+			.prepare(
+				"SELECT tag_number AS tag, type, status FROM tags WHERE session_id = ? ORDER BY tag_number ASC",
+			)
+			.all(sessionId) as { tag: number; type: string; status: string }[];
+		const opsRows = db.prepare("SELECT * FROM pending_ops").all() as unknown[];
 		await closeDatabase();
+		expect(
+			servedDropNotice(turn2Start),
+			`drop must be applied and served; tags=${JSON.stringify(
+				tagRows,
+			)} pending_ops=${JSON.stringify(opsRows)}`,
+		).toBe(true);
+		// Store side of the same fact: the queued op was consumed.
+		expect(tagRows.some((row) => row.status === "dropped")).toBe(true);
+		expect(opsRows).toHaveLength(0);
 
 		// Turn 3: resume once more — the cache must still be cold-stable.
 		const turn3Start = provider.requests.length;
@@ -460,12 +546,14 @@ describe("V9 budget", () => {
 		// Whole-session view: across every request of every run exactly one
 		// distinct baseline was ever served.
 		expect(distinctServedBaselines()).toHaveLength(1);
+		frozenMeta = meta3;
 
 		evidence.noExtraRebuilds = {
 			sessionId,
 			projectIdentity: resolveProjectIdentityForSession(projA),
 			turn1WallMs: Math.round(turn1WallMs),
 			turns: { turn1: meta1, turn2: meta2, turn3: meta3 },
+			managedPassAppliedOnResume: true, // queued drop → "[dropped §" asserted above
 			served: {
 				baselineBytes: heads1.baseline.length,
 				baselineSha256: new Bun.CryptoHasher("sha256")
@@ -488,6 +576,160 @@ describe("V9 budget", () => {
 		writeEvidence();
 	}, 180_000);
 
+	test("a store outage is refused fail-closed — no unmanaged turn — and the session resumes clean", async () => {
+		// Quickstart V9's failure-mode scenario: while a session is open, the
+		// shared store becomes unusable. The doctrine (F-06, us1-fail-closed
+		// in the double suite) is that Magic Context then goes silent and the
+		// host refuses steps rather than serving a turn with a lying context.
+		//
+		// The lever: a schema_migrations row above this binary's latest
+		// version makes openDatabaseAsync return null — the store-unavailable
+		// state the fail-closed arm in index.ts covers. The refused step must
+		// (a) keep the provider completely uncontacted, (b) log the refusal,
+		// (c) leave the cached baseline untouched so the next clean boot
+		// resumes with the same frozen state.
+		const outageLog = join(evidenceDir, "child-fail-closed.log");
+		rmSync(outageLog, { force: true });
+		// Raw handle: the core opener itself must not run migrations while
+		// arming the fence.
+		const raw = new RawSqlite(storePath);
+		raw.exec(
+			"INSERT OR REPLACE INTO schema_migrations(version, description, applied_at) VALUES (9999, 'v9 fence: pretend a newer lane owns the schema', 0)",
+		);
+		raw.close();
+
+		const requestsBeforeOutage = provider.requests.length;
+		provider.script([{ text: "should never be asked", promptTokens: 600 }]);
+		const outage = await home!.runHeadlessAsync("continue during outage", {
+			cwd: projA,
+			args: ["--session-id", sessionId],
+			env: { ...mockProviderEnv(), MAGIC_CONTEXT_LOG_PATH: outageLog },
+		});
+		const outageRequests = provider.requests.length - requestsBeforeOutage;
+		const outageLogText = existsSync(outageLog)
+			? readFileSync(outageLog, "utf8")
+			: "";
+		// Strongest available assertions (mirrors us1-fail-closed): the step
+		// is rejected before any provider request, and the run does not
+		// complete normally.
+		expect(outageRequests, "no provider request during a store outage").toBe(0);
+		expect(outageLogText).toContain("fail-closed: steps are refused");
+		const completed = outage.events.some(
+			(event) =>
+				event["type"] === "final" &&
+				(event["reason"] as { kind?: string } | undefined)?.kind ===
+					"completed",
+		);
+		expect(completed, "outage turn must not complete normally").toBe(false);
+
+		// --- restore: drop the fence row; the next turn must be clean. ---
+		const raw2 = new RawSqlite(storePath);
+		raw2.exec("DELETE FROM schema_migrations WHERE version = 9999");
+		raw2.close();
+		const requestsBeforeRestore = provider.requests.length;
+		provider.script([{ text: "after restore", promptTokens: 600 }]);
+		const restored = await home!.runHeadlessAsync("continue after restore", {
+			cwd: projA,
+			args: ["--session-id", sessionId],
+			env: mockProviderEnv(),
+		});
+		expect(
+			restored.status,
+			`child failed: ${restored.stderr.slice(0, 1_200)}`,
+		).toBe(0);
+		const restoredCompleted = restored.events.some(
+			(event) =>
+				event["type"] === "final" &&
+				(event["reason"] as { kind?: string } | undefined)?.kind ===
+					"completed",
+		);
+		expect(restoredCompleted).toBe(true);
+		expect(provider.requests.length).toBeGreaterThan(requestsBeforeRestore);
+
+		await openStore();
+		const metaAfterOutage = snapshotMeta(sessionId);
+		await closeDatabase();
+		// The outage window changed nothing about the frozen baseline: the
+		// case-1 stamps must still be identical after refusal + resumption.
+		expect(frozenMeta, "case 1 ran first").toBeDefined();
+		const frozen = frozenMeta!;
+		expect(metaAfterOutage.cachedM0Sha256).toBe(frozen.cachedM0Sha256);
+		expect(JSON.stringify(metaAfterOutage.cursors)).toBe(
+			JSON.stringify(frozen.cursors),
+		);
+
+		// --- throw-path variant: a corrupt store file makes the core opener
+		// THROW; the try/catch around openDatabaseAsync must route that into
+		// the same fail-closed arm instead of letting the failure escape as
+		// a swallowed plugin-load error (which would run the turn
+		// unmanaged). Pre-fix observed behavior: turn completed unmanaged.
+		const storeBytes = readFileSync(storePath);
+		const garbageLog = join(evidenceDir, "child-garbage-store.log");
+		rmSync(garbageLog, { force: true });
+		let garbageRequests = -1;
+		let garbageRefused = false;
+		let garbageCompleted = true;
+		try {
+			writeFileSync(storePath, "v9: not a database — corrupt store bytes");
+			rmSync(`${storePath}-wal`, { force: true });
+			rmSync(`${storePath}-shm`, { force: true });
+			const garbageRequestsBefore = provider.requests.length;
+			provider.script([
+				{ text: "must not be asked either", promptTokens: 600 },
+			]);
+			const garbage = await home!.runHeadlessAsync(
+				"continue over a corrupt store",
+				{
+					cwd: projA,
+					args: ["--session-id", sessionId],
+					env: { ...mockProviderEnv(), MAGIC_CONTEXT_LOG_PATH: garbageLog },
+				},
+			);
+			garbageRequests = provider.requests.length - garbageRequestsBefore;
+			const garbageLogText = existsSync(garbageLog)
+				? readFileSync(garbageLog, "utf8")
+				: "";
+			garbageRefused = garbageLogText.includes(
+				"fail-closed: steps are refused",
+			);
+			garbageCompleted = garbage.events.some(
+				(event) =>
+					event["type"] === "final" &&
+					(event["reason"] as { kind?: string } | undefined)?.kind ===
+						"completed",
+			);
+			expect(garbageRequests, "no provider request over a corrupt store").toBe(
+				0,
+			);
+			expect(garbageRefused, "corrupt store must log the refusal").toBe(true);
+			expect(garbageCompleted, "corrupt-store turn must not complete").toBe(
+				false,
+			);
+		} finally {
+			writeFileSync(storePath, storeBytes);
+		}
+
+		evidence.failClosedRefusal = {
+			method:
+				"schema_migrations row v9999 (newer-than-binary) → openDatabaseAsync returns null",
+			outageRefused: !completed,
+			outageProviderRequests: outageRequests,
+			unmanagedRequestsDuringOutage: outageRequests,
+			refusalLogged: outageLogText.includes("fail-closed: steps are refused"),
+			refusalLogPath: "child-fail-closed.log",
+			resumedClean: restoredCompleted,
+			baselineIntactAfterOutage:
+				metaAfterOutage.cachedM0Sha256 === frozen.cachedM0Sha256,
+			corruptStoreThrowPath: {
+				refused: garbageRefused,
+				providerRequests: garbageRequests,
+				completed: garbageCompleted,
+				logPath: "child-garbage-store.log",
+			},
+		};
+		writeEvidence();
+	}, 120_000);
+
 	test("the dreamer lane overlaps an open turn without blocking it", async () => {
 		// The maintenance lane is mounted by the child itself (dreamer.pi in
 		// the project config → the mock route). The dream is forced due
@@ -496,11 +738,20 @@ describe("V9 budget", () => {
 		provider.respond((request) => {
 			const body = request as Record<string, unknown>;
 			if (body["model"] === "mock-dream") {
-				const entries = Array.from(
-					{ length: 12 },
-					(_, i) =>
-						`<memory id="${String(i + 1)}" importance="70" scope="project" shareable="true"/>`,
-				).join("");
+				// The manifest must cover the asked pool exactly: echo the
+				// real ids back out of the prompt (pool rows are
+				// `[id] CATEGORY (current: …)`, JSON-escaped newlines).
+				const ids = new Set<string>();
+				for (const m of JSON.stringify(body).matchAll(
+					/\\n\[(\d+)\] \w+ \(current:/g,
+				))
+					ids.add(m[1]!);
+				const entries = [...ids]
+					.map(
+						(id) =>
+							`<memory id="${id}" importance="70" scope="project" shareable="true"/>`,
+					)
+					.join("");
 				return { text: `<classify>${entries}</classify>` };
 			}
 			turnReplies += 1;
@@ -608,9 +859,11 @@ describe("V9 budget", () => {
 		// Deterministic in-process measurement of the exact work a turn pays
 		// for: the pre-step management pass (mountAdapter on the host double,
 		// realistic seeded history) and the maintenance clock's tick.
-		// BOUND: 200 ms per steady pass / refresh pass / tick — generous
-		// (observed single-digit ms locally), absorbs CI jitter, and 3+
-		// orders of magnitude below any turn's budget.
+		// BOUND: 200 ms per steady pass / refresh pass / tick. Measured here:
+		// steady passes ≈ 130 ms dominated by the per-pass log projection +
+		// history index over the 48-message session; the bound leaves ~40%
+		// headroom on this machine and is still orders of magnitude below
+		// any turn's latency budget.
 		await openStore();
 		const host = new TestDshHost();
 		const handle = mountAdapter(host, MagicContextConfigSchema.parse({}), db, {
@@ -790,6 +1043,23 @@ describe("V9 budget", () => {
 
 		const worstSteady = Math.max(...steadyMs);
 		const worstTick = Math.max(...tickMs);
+		// The brief's bound: median of N=5 timed management passes (cold
+		// first materialization, three steady-state, one delta-refresh)
+		// under 200 ms. Deterministic-ish: the corpus is fixed (48 seeded
+		// messages, no wall-clock-derived behavior), the store is a local
+		// file on the same host, and no network is involved — run-to-run
+		// variance is GC and scheduler jitter only. The median additionally
+		// absorbs any single cold-start outlier (first-statement prepare,
+		// extension warm-up), which is why the cold pass is a legitimate
+		// sample even though it includes the one-time materialization.
+		const allPasses = [coldMs, ...steadyMs, deltaRefreshMs];
+		const medianMs = [...allPasses].sort((a, b) => a - b)[
+			Math.floor(allPasses.length / 2)
+		]!;
+		expect(
+			medianMs,
+			`median of ${allPasses.map((ms) => ms.toFixed(1)).join(", ")} ms`,
+		).toBeLessThan(200);
 		expect(
 			worstSteady,
 			`steady management passes: ${steadyMs.map((ms) => ms.toFixed(1)).join(", ")} ms`,
@@ -811,7 +1081,10 @@ describe("V9 budget", () => {
 				steadyPassMs: steadyMs.map((ms) => Number(ms.toFixed(2))),
 				worstSteadyMs: Number(worstSteady.toFixed(2)),
 				deltaRefreshMs: Number(deltaRefreshMs.toFixed(2)),
-				extraManagedBracketsOnSteadyPasses:
+				medianOfFivePassesMs: Number(medianMs.toFixed(2)),
+				// Exactly one bracket: the delta-refresh pass (the compartment
+				// delta changed). Steady-state passes opened zero (asserted).
+				managedBracketsAfterAllPasses:
 					session.eventsOf("mc/manage-start").length - startsBefore,
 			},
 			schedulerTick: {
