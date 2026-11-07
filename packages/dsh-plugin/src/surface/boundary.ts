@@ -63,15 +63,12 @@ function ordinalOf(
 	return projection.byMessageId.get(messageId)?.ordinal ?? null;
 }
 
-/** Message id at one projection ordinal (1-based). */
+/** Message id at one projection ordinal (1-based): O(1) via the index. */
 function messageIdAt(
 	projection: DshLogProjection,
 	ordinal: number,
 ): string | null {
-	for (const [messageId, entry] of projection.byMessageId) {
-		if (entry.ordinal === ordinal) return messageId;
-	}
-	return null;
+	return projection.byOrdinal.get(ordinal) ?? null;
 }
 
 /**

@@ -226,9 +226,13 @@ export function createDshPrimerRawProviderFactory(
 		let cached: { records: readonly DshLogMessageRecord[] } | undefined;
 		return createDshRawMessageProvider(() => {
 			cached ??= { records };
+			const rawMessages = projectRetrospectiveRaw(sessionId, cached.records);
 			return {
-				rawMessages: projectRetrospectiveRaw(sessionId, cached.records),
+				rawMessages,
 				byMessageId: new Map(),
+				byOrdinal: new Map(
+					rawMessages.map((message) => [message.ordinal, message.id]),
+				),
 				records: cached.records,
 			};
 		});
