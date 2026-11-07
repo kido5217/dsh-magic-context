@@ -212,4 +212,50 @@ describe("head block coverage (T049)", () => {
 		await handle.dispose();
 		handles.pop();
 	});
+
+	test("guidance_override_path rides the shared prompt-surface runtime (T095)", async () => {
+		// The key is honored exactly as the core arm honors it: the adapter
+		// forwards prompt_surface to the shared runtime and the override owns
+		// the primary guidance bytes (FR-022; census row C-21 evidence).
+		const overrideDir = mkdtempSync(join(tmpdir(), "mc-guidance-override-"));
+		const overridePath = join(overrideDir, "guidance.md");
+		writeFileSync(
+			overridePath,
+			"## Magic Context\n\nCustom override prose for DSH.\n",
+		);
+		const host = new TestDshHost();
+		const config = MagicContextConfigSchema.parse({
+			prompt_surface: { guidance_override_path: overridePath },
+		});
+		const handle = mountAdapter(host, config, db, {
+			readSessionLog: () => records,
+			projectDir,
+		});
+		handles.push(handle);
+		host.addSession({ id: "s-blocks-override" });
+		host.pressureReadings.set("s-blocks-override", {
+			pressureTokens: 1_000,
+			contextWindow: 100_000,
+		});
+		expect(
+			await host.firePreStep({
+				sessionId: "s-blocks-override",
+				turn: 1,
+				step: 1,
+			}),
+		).toBe("enter");
+
+		const head = handle.head.peek("s-blocks-override");
+		expect(head).toBeDefined();
+		// The user's bytes own the primary prose...
+		expect(head!.text).toContain("Custom override prose for DSH.");
+		// ...in place of the built-in frame, and nothing else about the
+		// baseline changes: the knowledge blocks still render.
+		expect(head!.text).not.toContain("long-term partner on this project");
+		expect(head!.text).toContain("<project-docs>");
+		expect(head!.text).toContain("<project-memory>");
+
+		await handle.dispose();
+		handles.pop();
+	});
 });
