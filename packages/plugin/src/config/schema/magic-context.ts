@@ -668,6 +668,10 @@ export const DreamerConfigSchema = AgentMetadataSchema.extend({
         ),
     opencode: DreamerOpenCodeHarnessBlockSchema.optional(),
     pi: DreamerPiHarnessBlockSchema.optional(),
+    // DSH shares the serverless host-block shape; the DSH adapter reads
+    // `dsh` first and falls back to `pi`, then maps the block onto pi
+    // execution semantics internally.
+    dsh: DreamerPiHarnessBlockSchema.optional(),
     omp: DreamerOmpHarnessBlockSchema.optional(),
     tasks: DreamTasksSchema.default(() => DreamTasksSchema.parse({})),
     inject_docs: z

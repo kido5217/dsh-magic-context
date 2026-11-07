@@ -122,13 +122,12 @@ per-harness **after** form for all new configuration.
     "omp": {
       "model": "opencode/provider-model-id",
       "thinking_level": "auto"
-    },
-    "dsh": { "model": "provider/model-id" }
+    }
   }
 }
 ```
 
-OMP uses Pi-native `thinking_level` qualifiers. If `historian.omp` or `dreamer.omp` is absent, OMP falls back to the matching `pi` block, so existing Pi-compatible configurations need no migration. An explicit OMP block is authoritative even when it omits a model.
+OMP uses Pi-native `thinking_level` qualifiers. If `historian.omp` or `dreamer.omp` is absent, OMP falls back to the matching `pi` block, so existing Pi-compatible configurations need no migration. An explicit OMP block is authoritative even when it omits a model. DSH needs no `historian` block at all — its summarizer runs through the DSH host's own routed model; `dreamer.dsh` (or `dreamer.pi`) does select the maintenance model.
 
 User-level config is `~/.config/cortexkit/magic-context.jsonc` on macOS/Linux and `%USERPROFILE%\.config\cortexkit\magic-context.jsonc` on Windows (or `$XDG_CONFIG_HOME/cortexkit/magic-context.jsonc` when set). OpenCode Desktop users can use the dashboard's config editor or hand-edit that file; Desktop does not include the CLI setup wizard.
 
@@ -136,7 +135,7 @@ User-level config is `~/.config/cortexkit/magic-context.jsonc` on macOS/Linux an
 
 **Oh My Pi (OMP):** `npx @cortexkit/magic-context@latest setup --harness omp` (requires OMP `>= 17.1.7`). Setup installs the Pi-compatible extension through `omp plugin`, disables OMP native compaction and automatic memory, and honors OMP profiles, `PI_CODING_AGENT_DIR`, and initialized XDG layouts.
 
-**DSH (DeepSeek Harness):** install the `@cortexkit/dsh-magic-context` plugin bundle into your DSH profile (via the Plugins page, or by adding it to the profile's `bundles` list; requires DSH `>= 0.2.2-rc.1 < 0.3`). The adapter shares the same database as the other harnesses; project memories, history, and embeddings pool across all of them. Magic Context claims compaction for the sessions it manages — turn off the profile's default compaction backend (disable the `compaction-basic` row) so the two never double-shadow a session. See `packages/dsh-plugin/README.md` and its `PARITY.md` for the DSH-side details.
+**DSH (DeepSeek Harness):** install the `@cortexkit/dsh-magic-context` plugin bundle into your DSH profile (via the Plugins page, or by adding it to the profile's `bundles` list). Supported DSH versions are the bundle's declared `engines.dsh` range — currently `>= 0.2.2-rc.1 < 0.3`; raising that range is a recorded compatibility decision, so treat it as the supported matrix for this release. The adapter shares the same database as the other harnesses; project memories, history, and embeddings pool across all of them. Magic Context claims compaction for the sessions it manages: the bundle patch disables the profile's `compaction-basic` row, an automatic trigger folds through Magic Context's own lane, and `/compact` on a managed session performs one real Magic Context fold. All six slash commands are available (`/ctx-status`, `/ctx-flush`, `/ctx-embed`, `/ctx-recomp`, `/ctx-wrapup`, `/ctx-dream`); commands register in every boot, but dispatch is surface-side, so a headless run registers without dispatching. The maintenance lane is gated on a dreamer model block (`dreamer.dsh` preferred over `dreamer.pi`; see `packages/dsh-plugin/README.md`). See `packages/dsh-plugin/README.md` and its `PARITY.md` for the DSH-side details.
 
 **Troubleshooting:** `npx @cortexkit/magic-context@latest doctor` auto-detects your harnesses, checks host-specific conflicts, verifies plugin registration and database integrity, and fixes what it can. Add `--issue` to file a ready-to-submit bug report.
 
@@ -270,6 +269,8 @@ Recall works **across sessions** (a new session inherits everything) and **acros
 | `/ctx-wrapup [messages_to_keep]` | Compact older live history while keeping the newest N messages raw; queued compaction materializes on the next model message |
 | `/ctx-dream` | Run dreamer maintenance on demand: maintain memory, docs, smart notes, and user-profile review |
 | `/ctx-embed` | Embedding status, or start/pause history compartment embedding (`start` \| `pause`) |
+
+On DSH all six commands ship with the same names and shared services. Differences are host-shaped, not feature-shaped: DSH's `/ctx-embed` accepts `start` (anything else prints usage) and answers honestly when the bundle ships no runtime for the configured `embedding.provider`; DSH's `/ctx-dream` refuses with a pointer to the dreamer block when no dreamer model enables the lane; and slash-command dispatch is surface-side, so a headless DSH boot registers the commands without dispatching them. See `packages/dsh-plugin/README.md`.
 
 ---
 

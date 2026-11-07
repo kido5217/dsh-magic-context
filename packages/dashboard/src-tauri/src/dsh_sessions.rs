@@ -265,20 +265,23 @@ pub fn read_dsh_session_detail(path: &Path) -> Option<Arc<DshSessionDetail>> {
 fn read_dsh_session_meta_uncached(path: &Path, mtime: SystemTime) -> Option<DshSessionMeta> {
     let text = decode_log(path)?;
     let mut acc = MetaAccumulator::new(session_dir_name(path));
+    // Scan to EOF, not to the first title: the host may write a placeholder
+    // title early and overwrite it with the provider title much later, and
+    // the newest `session/title` event wins. The first-user preview keeps
+    // first-wins semantics inside the accumulator, so the extra lines cost
+    // only parsing (the frame is already fully decoded) and buy a fresher
+    // title and a real message count.
     for line in text.lines() {
         let Some(event) = parse_json_line(line) else {
             continue;
         };
         acc.consume(&event);
-        // Header + title + first user text all seen: stop before the bulk.
-        if acc.header_seen && acc.title_seen && !acc.first_message.is_empty() {
-            break;
-        }
     }
     let mut meta = acc.finish(mtime, path.to_path_buf())?;
-    // The cheap pass cannot know the total; keep the count from a full parse
-    // when one happened before, else count what this pass saw. Message count
-    // is informational only (mirrors PiSessionMeta).
+    // The whole-file scan counts every line; keep the count from a prior
+    // full detail parse when one happened before (they agree; max keeps
+    // this line a no-op guard). Message count is informational only
+    // (mirrors PiSessionMeta).
     meta.message_count = meta.message_count.max(acc.message_count);
     Some(meta)
 }
@@ -362,9 +365,11 @@ fn read_dsh_session_detail_uncached(path: &Path, mtime: SystemTime) -> Option<Ds
     })
 }
 
-/// Accumulates the fields both passes need from the event stream. The cheap
-/// meta pass stops early; the detail pass consumes everything and only the
-/// metadata fields survive.
+/// Accumulates the fields both passes need from the event stream. Both passes
+/// consume the whole event stream: a `session/title` may arrive at any point
+/// (placeholder early, provider title later) and the newest one wins, so no
+/// early stop can promise the final title. The detail pass additionally
+/// builds the transcript; here only the metadata fields survive.
 struct MetaAccumulator {
     dir_name: String,
     session_id: Option<String>,
@@ -374,7 +379,6 @@ struct MetaAccumulator {
     first_message: String,
     message_count: u32,
     header_seen: bool,
-    title_seen: bool,
 }
 
 impl MetaAccumulator {
@@ -388,7 +392,6 @@ impl MetaAccumulator {
             first_message: String::new(),
             message_count: 0,
             header_seen: false,
-            title_seen: false,
         }
     }
 
@@ -413,15 +416,19 @@ impl MetaAccumulator {
                     .to_string();
                 self.created = event.get("createdAt").and_then(Value::as_i64).unwrap_or(0);
             }
-            "session/title" if !self.title_seen => {
-                // Record the event as seen even without a usable title: the
-                // host emits it once, at most.
-                self.title_seen = true;
-                self.title = event
+            "session/title" => {
+                // The host may emit this event more than once (placeholder
+                // written at session start, provider title once generated):
+                // the newest usable title wins. An unusable later event
+                // (missing/blank title) never clears one already seen.
+                if let Some(title) = event
                     .pointer("/data/title")
                     .and_then(Value::as_str)
                     .map(clean_title)
-                    .filter(|title| !title.is_empty());
+                    .filter(|title| !title.is_empty())
+                {
+                    self.title = Some(title);
+                }
             }
             "user/message" => {
                 if self.first_message.is_empty() {

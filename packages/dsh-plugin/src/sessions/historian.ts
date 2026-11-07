@@ -33,6 +33,7 @@
 import { randomUUID } from "node:crypto";
 import { ManualCompactionError } from "@deepseek-ai/dsh-compaction";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
+import { withContentLanguageDirective } from "@magic-context/core/agents/language-directive";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import { insertCompartmentEvents } from "@magic-context/core/features/magic-context/compartment-events";
 import {
@@ -596,7 +597,14 @@ export class Historian {
 		const options: GenerateOptions = {
 			provider: route.provider,
 			model: route.model,
-			system: COMPARTMENT_AGENT_SYSTEM_PROMPT,
+			// User-level `language` rides the system prompt exactly as the core
+			// historian applies it (runHistorianPrompt / the incremental
+			// runner): the directive targets authored prose and leaves every
+			// structural token English. No directive when unset.
+			system: withContentLanguageDirective(
+				COMPARTMENT_AGENT_SYSTEM_PROMPT,
+				this.config.language,
+			),
 			messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
 			purpose: "magic-context",
 			...(this.config.historian?.maxTokens !== undefined

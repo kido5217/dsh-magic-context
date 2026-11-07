@@ -39,32 +39,28 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
 8. **DSH-imposed — coverage coordinates are durable surface seqs.** Compartments store
    `startMessage`/`endMessage` as DSH session-log seqs (the only coordinate that survives
    shadowing); projection positions are per-read. Resume-skip, fold-continuation and the
-   protected-tail all key on seq. v1 scope — DSH-imposed only.
+   protected-tail all key on seq.
 9. **DSH-imposed — protected-tail budget halves on emergency passes.** With the core's
    request-time protections (`protected_tokens`, `history_budget_percentage`) mapped onto
    the routed window, a force/refuse pass halves the verbatim budget so pressure can still
    find a foldable window; on request-transform harnesses the same protections apply per
-   request without a fold-time tension. v1 scope — DSH-imposed only.
-10. **v1 scope — head renders guidance + compartments + facts + project memory +
-    temporal ranges.** The head block is built through the same core renderers as the
-    full injection pipeline (`buildCompartmentBlock` with the memory block, budget trim,
-    rendered-id capture and cache snapshot, plus date ranges resolved from durable-log
-    timestamps), so `ctx_search` hard-filtering behaves identically. What remains
-    deferred is the v2 tiered render (P1–P4 aging) and the mural: the DSH historian
-    publishes one flat P1-style compartment per fold with a minimal summarizer prompt
-    (the core compartment prompt targets agent runners) and no memory promotion — tier
-    aging is dreamer-maintained work and rides entry 14. Not a host-forced gap: flagged
-    for a follow-up pass, applies equally to every harness once the dreamer lane runs.
-11. **DSH-imposed — `/compact` declines while MC manages.** The host's `CompactionResult`
-    contract (compaction/start|summary|end event seqs, `@deepseek-ai/dsh-compaction` 0.2.2-rc.1)
-    is a request-eraser protocol; an MC pass is a scheduled lane pass, not an eraser run, so
-    the claimed backend returns null for command-driven compaction and `/compact` reports
-    nothing to do. Pressure-driven folds cover the same need (observed behavior, live gate).
-12. **v1 scope — tool session binding resolves to the most recently attached session.**
-    Core tools are per-conversation; DSH registers the tool set once per mount, so the
-    session a tool call targets comes from the live session last seen by the mapping
-    (`SessionMapping.lastAttached()`), refined per agent in the follow-up pass. Single-agent
-    hosts (the documented v1 deployment shape) are unaffected.
+   request without a fold-time tension.
+10. **Resolved — the head renders the full injection pipeline.** The head ships guidance,
+    tiered history (P1–P4 through the shared m[0]/m[1] builder), project memory, project docs,
+    temporal ranges and the capability-gated mural, all through the core renderers; the
+    three-segment identity fingerprint covers baseline, model key and fold epoch. See
+    "Resolved since the v1 ledger".
+
+11. **Resolved — `/compact` runs an MC fold.** The claim's `compactNow`/`compactRegion`
+    delegate to `createMcFold`: historian fold over the live projection, the host-mandated
+    durable shape (`compaction/start`, `compaction/summary`, exactly ONE checkpoint-bearing
+    surface replacement, `compaction/end`), a full `CompactionResult` with real seqs, and a
+    busy guard shared with pressure folds. Evidence: `src/compaction-fold.ts`,
+    `test/compaction-fold.test.ts`.
+
+12. **Resolved — tools bind per agent.** Tool handlers resolve the invoking agent's session
+    (per-agent binding, T018), not a mount-wide "most recently attached" guess; concurrent
+    multi-agent mounts route correctly. Evidence: `test/us2-tools.test.ts`.
 
 13. **Managed bracket bookkeeping rides the plugin-record channel, not new event types.**
     The host's reopen validator admits only `KNOWN_SESSION_EVENT_TYPES` or events marked
@@ -78,20 +74,14 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
     restriction is a repo-internal gate with no runtime enforcement, and the ignorable
     marker is the documented compatibility mechanism for out-of-repo plugin events.
 
- 14. **Declared — dreamer maintenance does not run on DSH (v1).** The core dreamer is a
-     host-driven maintenance lane: `features/magic-context/dreamer/` schedules its passes
-     through the OpenCode plugin lifecycle (`cron.ts`) and runs them as hidden *host
-     sessions* (the host forks a conversation and the dreamer prompt steers it) — a surface
-     DSH does not offer at that seam: there is no session-fork API, and a plugin cannot
-     spawn a durable conversation without user-visible surface effects. The decided
-     follow-up mechanism (plan `sessions/` decision) is an aux-model lane: a scheduler off
-     the pre-step pass running `ctx.llm.stream()` directly (the historian summarizer's
-     shape), keyed off the historian cadence, reusing the core classify/curate/verify
-     prompts unchanged. Effect on DSH-only fleets: compartment tier aging, memory
-     promotion/curation and expiry sweeps do not run — memories stay exactly as tools and
-     folds wrote them. Cross-harness fleets are unaffected in the read direction: DSH
-     sessions render and search what an OpenCode dreamer maintains (shared store).
-     Declared per spec edge case 3 ("silence is not an option"), not silently skipped.
+ 14. **Resolved — the dreamer maintenance lane runs on DSH.** The host-session-fork premise
+    was replaced by the decided aux-model mechanism, now shipped: one adapter scheduler
+    (interval + `ctx.effect` disposer; cordis has no `ctx.interval` service in 0.2.2-rc.1)
+    drives the core task logic unchanged over two hidden carriers (single-shot
+    `ctx.llm.stream` and a hidden maintenance agent with the tool-loop transport), leases,
+    retry caps and `dream_runs` rows included; `dreamer.dsh` takes precedence over
+    `dreamer.pi` (schema field added upstream-ably). Evidence: `src/maintenance/`,
+    `test/maintenance-*.test.ts`, `test/live-v5.test.ts`, `gate-evidence/v5-maintenance/`.
 
 15. **Resolved — assistant-body reduction is available (projection lane).** The v1 plan
     treated edits *inside* an assistant message as host-blocked (a replacement must cite
@@ -156,6 +146,31 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
     ship `embedding-worker-process.js` plus the onnx dependency, or document a remote provider
     in the setup flow. Evidence: `src/pressure/lanes.ts` (`maybeBackfillEmbeddings`),
     `test/us1-assistance.test.ts` (local/off is never triggered).
+
+20. **DSH-imposed — command dispatch is an interactive-surface behavior.** The plugin
+    registers the six `ctx-*` commands on the command runtime (hard-injected `commands`
+    bundle); the headless app forwards slash text to the model instead of dispatching
+    (observed, 0.2.2-rc.1, spike T013). Interactive surfaces dispatch the registered
+    handlers; live proof therefore pins registration (`test/live-v6.test.ts`) and handler
+    behavior in-process (`test/commands.test.ts`).
+21. **DSH-imposed — the maintenance tick is a plain interval.** Cordis exposes no
+    `ctx.interval` service in 0.2.2-rc.1 (verified against the composed profile); the lane
+    owns a wall-clock interval whose disposer is registered through `ctx.effect`, so fiber
+    teardown still stops it. Semantics (quiet window, jitter, lease discipline) are
+    unchanged.
+22. **DSH-imposed — self-update applies with a host command and needs a restart.** The
+    bundle set is fixed at process start, so an applied update reports
+    restart-required; provenance rules (dev/pinned installs are never auto-applied) match
+    the shared pinning doctrine. Evidence: `src/maintenance/update-check.ts`,
+    `test/update-check.test.ts`.
+23. **DSH-imposed — `ctx-status` reports `toolDefinitionTokens: 0`.** DSH does not meter
+    tool-schema bytes into the shared store, so the status view's tool-definition row is
+    zero rather than a lie; every other field is measured from the store or the per-pass
+    counters (`persistStatusMeta`).
+24. **Declared — git-context (commit-aware) capability is unscoped here.** The core's
+    git sweep is owned by other harnesses' host git surfaces; no DSH task exists in 002
+    and no host fact forces a DSH arm. Recorded as census ST-10 `missing` with deferred
+    ledger DL-3, not silently dropped.
 
 ## Resolved since the v1 ledger was written
 

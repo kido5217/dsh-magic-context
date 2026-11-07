@@ -275,6 +275,12 @@ export function mountAdapter(
 	// drops, head management, the historian fold and the pressure lanes, all
 	// mounted behind one pre-step listener. Sessions join the compaction claim
 	// at first attach (lanes.ts documents the choice).
+	const promptSurfaceRuntime = createPromptSurfaceRuntime({
+		harness: "dsh",
+		directory: process.cwd(),
+		warn: (message) => log(`[dsh-magic-context] prompt-surface: ${message}`),
+	});
+
 	const head = new HeadManager(
 		db,
 		managedEdits,
@@ -283,6 +289,7 @@ export function mountAdapter(
 		opts.historianRoute,
 		opts.attachments,
 		opts.modelKey,
+		promptSurfaceRuntime,
 	);
 	const historian = new Historian(
 		host,
@@ -333,11 +340,6 @@ export function mountAdapter(
 	// Same five for subagent sessions (FR-005); `sessionId()` resolves per call
 	// so one registration follows session switches. Gates mirror pi's boot-time
 	// registration; the core prompt surface is the sole description source.
-	const promptSurfaceRuntime = createPromptSurfaceRuntime({
-		harness: "dsh",
-		directory: process.cwd(),
-		warn: (message) => log(`[dsh-magic-context] prompt-surface: ${message}`),
-	});
 	registerEffect("ctx-tools", () => {
 		const disposeTools = registerMagicContextToolsDsh(host, {
 			db,
@@ -410,11 +412,43 @@ export async function apply(
 		mmapSizeMb: mmap_size_mb,
 	});
 	const dbPath = join(getMagicContextStorageDir(), "context.db");
-	const db = await openDatabaseAsync({ dbPath, nativeTurnDeadlines: true });
-	if (!db) {
+	// A fatal open/migration error is deterministic inoperability exactly like
+	// an unavailable store: it must reach the fail-closed arm below, not
+	// escape into the host's plugin-load error handling (which would swallow
+	// it and run the session unmanaged).
+	let db: Awaited<ReturnType<typeof openDatabaseAsync>>;
+	try {
+		db = await openDatabaseAsync({ dbPath, nativeTurnDeadlines: true });
+	} catch (error) {
 		log(
-			"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run",
+			`[dsh-magic-context] shared store could not be opened: ${error instanceof Error ? error.message : String(error)}`,
 		);
+		db = null;
+	}
+	if (!db) {
+		// F-06: with the fail-closed key armed (default), deterministic
+		// inoperability is loud — every primary step is refused with a
+		// recoverable-error notice instead of silently falling through to
+		// host-native compaction (core `fail-closed-block.ts` doctrine).
+		if (loaded.config.fail_closed_blocking !== false) {
+			log(
+				"[dsh-magic-context] shared store unavailable; fail-closed: steps are refused until the store is recoverable",
+			);
+			ctx.effect(() => {
+				const off = ctx.on(
+					"agent/pre-step",
+					(_payload: unknown, _next: unknown) =>
+						Promise.resolve({ kind: "reject" } as const),
+				);
+				return () => {
+					off();
+				};
+			}, "dsh-magic-context-fail-closed");
+		} else {
+			log(
+				"[dsh-magic-context] shared store unavailable; Magic Context is disabled for this run",
+			);
+		}
 		return;
 	}
 	process.once("exit", () => {

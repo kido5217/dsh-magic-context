@@ -44,6 +44,7 @@ import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-conte
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { updateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
 import type { M0SnapshotMarkers } from "@magic-context/core/hooks/magic-context/inject-compartments";
+import type { PromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
 import type { DshSession, McCheckpointSource } from "../host.js";
 import type { HistorianRoute } from "../sessions/historian.js";
 import type { DshLogProjection } from "./dsh-session-log.js";
@@ -117,8 +118,10 @@ export class HeadManager {
 		private readonly attachments?: MuralAttachments,
 		/** Model key used until a route is observed (per-model prompt surfaces). */
 		private readonly fallbackModelKey?: string,
+		/** Shared prompt-surface runtime (per-model guidance presets). */
+		private readonly promptSurface?: PromptSurfaceRuntime,
 	) {
-		this.baseline = new BaselineRenderer(db, config, projectDir);
+		this.baseline = new BaselineRenderer(db, config, projectDir, promptSurface);
 		this.deltas = new DeltaRenderer(this.baseline);
 	}
 
