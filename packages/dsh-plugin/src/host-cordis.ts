@@ -328,6 +328,7 @@ export interface CordisHostOptions {
 	 * the routed model's advertised modality — unknown routes report false.
 	 */
 	readonly observeModel?: (
+		sessionId: string,
 		selection: ModelSelection | undefined,
 		imageInput: boolean,
 	) => void;
@@ -446,7 +447,7 @@ export function createCordisHost(
 					} else {
 						routedWindows.delete(sessionId);
 					}
-					observeModel?.(payload.modelSelection, imageInput);
+					observeModel?.(sessionId, payload.modelSelection, imageInput);
 					if (source !== undefined) {
 						// The pass bridge reads the snapshot synchronously; refresh
 						// it here, the one async moment before every listener. A
@@ -679,29 +680,46 @@ export function createCordisSessionLogSource(
  */
 export function createCordisHistorianRoute(): {
 	readonly observe: (
+		sessionId: string,
 		selection: ModelSelection | undefined,
 		imageInput: boolean,
 	) => void;
 	readonly route: HistorianRoute;
 } {
-	let current: ModelSelection | undefined;
-	let imageInput = false;
+	// N-15: model selection is per agent. A single process-global "last
+	// prepare wins" selection made concurrent sessions price their folds
+	// against whichever session most recently stepped; the observed
+	// selection is now kept per session, with the last observation as the
+	// fallback for folds of never-observed sessions.
+	const perSession = new Map<
+		string,
+		{ selection: ModelSelection; imageInput: boolean }
+	>();
+	let last: { selection: ModelSelection; imageInput: boolean } | undefined;
 	return {
-		observe: (selection, modalities) => {
-			if (selection !== undefined) {
-				current = selection;
-				imageInput = modalities;
-			}
+		observe: (sessionId, selection, modalities) => {
+			if (selection === undefined) return;
+			last = { selection, imageInput: modalities };
+			perSession.set(sessionId, last);
 		},
 		route: {
 			get provider(): string {
-				return current?.provider ?? "";
+				return last?.selection.provider ?? "";
 			},
 			get model(): string {
-				return current?.model ?? "";
+				return last?.selection.model ?? "";
 			},
 			get imageInput(): boolean {
-				return imageInput;
+				return last?.imageInput ?? false;
+			},
+			forSession: (sessionId) => {
+				const seen = perSession.get(sessionId) ?? last;
+				if (seen === undefined) return undefined;
+				return {
+					provider: seen.selection.provider,
+					model: seen.selection.model,
+					imageInput: seen.imageInput,
+				};
 			},
 		},
 	};

@@ -386,7 +386,13 @@ export function parseDshCompactionState(patchYaml: string | null): DshCompaction
         }
         if (/^\s+/.test(line)) {
             if (!inTargetEntry) continue;
-            if (/^(disabled|enabled)\s*:\s*true\b/.test(trimmed)) sawDisable = true;
+            // N-15: read the key AND its value — `enabled: true` and
+            // `disabled: false` re-enable the row; only `disabled: true` /
+            // `enabled: false` keep it disabled. Last explicit key wins.
+            if (/^disabled\s*:\s*true\b/.test(trimmed)) sawDisable = true;
+            else if (/^enabled\s*:\s*false\b/.test(trimmed)) sawDisable = true;
+            else if (/^disabled\s*:\s*false\b/.test(trimmed)) sawDisable = false;
+            else if (/^enabled\s*:\s*true\b/.test(trimmed)) sawDisable = false;
             continue;
         }
         inTargetEntry = false;

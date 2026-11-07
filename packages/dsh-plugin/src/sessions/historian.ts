@@ -74,6 +74,16 @@ export interface HistorianRoute {
 	readonly provider: string;
 	readonly model: string;
 	/**
+	 * N-15: per-session view of the routed model. DSH's historian route
+	 * follows each agent's live model selection, so a fold for one session
+	 * should be priced against THAT session's selection, not whichever
+	 * session last prepared a step. Absent ⇒ the global getters are used for
+	 * every session (single-selection harnesses).
+	 */
+	forSession?(sessionId: string):
+		| { readonly provider: string; readonly model: string }
+		| undefined;
+	/**
 	 * Routed model advertises `image` input (updated by the host's step
 	 * observer). Unknown ⇒ absent/false: murals and every other image payload
 	 * stay text-only (FR-006).
@@ -152,6 +162,20 @@ export class Historian {
 	 * returns -1 for a fresh session, so "foldable" is exactly the records
 	 * whose seq exceeds the covered boundary.
 	 */
+	/**
+	 * The route to price this fold against (N-15): the session's own observed
+	 * selection when the route is session-aware, else the global selection.
+	 */
+	private routed(sessionId: string): { provider: string; model: string } {
+		const route = this.route as HistorianRoute;
+		return (
+			route.forSession?.(sessionId) ?? {
+				provider: route.provider,
+				model: route.model,
+			}
+		);
+	}
+
 	async fold(request: FoldRequest): Promise<FoldOutcome | null> {
 		const { session, mcSession, projection } = request;
 		const coveredThrough = getLastCompartmentEndMessage(this.db, mcSession);
@@ -235,6 +259,7 @@ export class Historian {
 			this.config.dreamer,
 		);
 		const pass = await this.runPass(
+			session.id,
 			`Messages ${String(fromSeq)}-${String(toSeq)}:\n\n${eligible
 				.map(
 					(record) => `[${String(record.seq)}] ${record.role}: ${record.text}`,
@@ -452,7 +477,7 @@ export class Historian {
 					const summaryBlocks: McReplacementContent = [
 						{ type: "text", text: raw },
 					];
-					const route = this.route as HistorianRoute;
+					const route = this.routed(session.id);
 					const summarySeq = (
 						await session.appendCompactionEvent({
 							phase: "summary",
@@ -601,11 +626,12 @@ export class Historian {
 
 	/** Request-only aux call; null on any failure or empty completion. */
 	private async runPass(
+		sessionId: string,
 		inputSource: string,
 		memoryEnabled: boolean,
 		userObservationsRequested: boolean,
 	): Promise<{ output: ParsedCompartmentOutput; raw: string } | null> {
-		const route = this.route!;
+		const route = this.routed(sessionId);
 		const prompt = buildCompartmentAgentPrompt({
 			seedExamples: "",
 			sessionReferences: "",

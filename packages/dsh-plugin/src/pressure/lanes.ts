@@ -168,11 +168,13 @@ export class PressureLanes {
 	};
 
 	detach(sessionId: string): void {
-		this.attachedSessions.get(sessionId)?.unregisterProvider();
+		const state = this.attachedSessions.get(sessionId);
+		state?.unregisterProvider();
 		this.attachedSessions.delete(sessionId);
 		this.gates.detach(sessionId);
 		// N-06: the refusal episode is session state too.
 		this.refusalEpisode.delete(sessionId);
+		if (state !== undefined) todoDelivery.forget(state.mcSession);
 	}
 
 	detachAll(): void {
@@ -181,6 +183,8 @@ export class PressureLanes {
 		this.attachedSessions.clear();
 		this.refusalEpisode.clear();
 		this.gates.detachAll();
+		// The module-level delivery ledger is per-mount process state.
+		todoDelivery.detachAll();
 	}
 
 	private attach(session: DshSession): AttachedSession {
@@ -400,9 +404,11 @@ export class PressureLanes {
 		// execute). Nothing below the band may apply new edits anyway.
 		if (lane === "below-execute") {
 			this.gates.resetEpisode(session.id);
-			// A new pressure episode re-arms the once-per-episode nudges.
+			// A new pressure episode re-arms the once-per-episode nudges — for
+			// THIS session only (N-15: detachAll here re-armed every other
+			// session's todo delivery too).
 			channel2Lease.reset(state.mcSession);
-			todoDelivery.detachAll();
+			todoDelivery.forget(state.mcSession);
 		}
 		let changed = false;
 		const autoQueue =
