@@ -102,7 +102,7 @@ export function maintenanceRunnable(config: {
 }): boolean {
 	const dreamer = config.dreamer;
 	if (!dreamer) return false;
-	if (dreamer.enabled === false) return false;
+	if (dreamer.disable === true) return false;
 	return dreamer.dsh !== undefined || dreamer.pi !== undefined;
 }
 

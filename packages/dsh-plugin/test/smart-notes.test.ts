@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import {
 	addNote,
@@ -97,11 +98,27 @@ describe("maintenance-runnable gate", () => {
 		expect(maintenanceRunnable({ dreamer: { dsh: { model: "p/m" } } })).toBe(
 			true,
 		);
+		// `dreamer.disable` is the core's live-reload kill switch; a
+		// non-schema `enabled` key is ignored (F-02).
 		expect(
 			maintenanceRunnable({
-				dreamer: { enabled: false, dsh: { model: "p/m" } },
+				dreamer: { disable: true, dsh: { model: "p/m" } },
 			}),
 		).toBe(false);
+		expect(
+			maintenanceRunnable({
+				dreamer: { enabled: false, pi: { model: "p/m" } },
+			}),
+		).toBe(true);
+		// F-01: the core schema must let a `dreamer.dsh` block survive
+		// parsing — a stripped block silently dead-ends the whole lane.
+		const parsed = MagicContextConfigSchema.parse({
+			dreamer: { dsh: { model: "mock/mock-model" } },
+		});
+		expect((parsed.dreamer as { dsh?: { model?: string } }).dsh?.model).toBe(
+			"mock/mock-model",
+		);
+		expect(maintenanceRunnable(parsed)).toBe(true);
 	});
 });
 
