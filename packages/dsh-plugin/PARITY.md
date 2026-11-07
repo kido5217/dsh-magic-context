@@ -129,6 +129,18 @@ cite a specific host fact (docs section or observed behavior, with DSH version).
     a defect rather than a divergence. Evidence: `src/surface/node-ops.ts`,
     `test/node-ops.test.ts`, `test/us1-long-session.test.ts`.
 
+18. **DSH-imposed — provider reasoning is replayed and cannot be dropped by the adapter.**
+    The host reconstructs a historical assistant message's reasoning from the message's own
+    replay state, not from the content blocks a plugin supplies, so a projection rewrite
+    replaces the visible answer while the reasoning that produced it still goes out. The
+    core drops reasoning together with the text it answered (`keepReasoning` distinguishes
+    the meaning-preserving case); on DSH no seam expresses either choice. Evidence:
+    `specs/002-dsh-full-parity/gate-evidence/spike-reasoning-replay.md` (live: the resumed
+    request carries `reasoning_content` verbatim), `packages/dsh-plugin/test/reasoning-replay.test.ts`.
+    Effect: a session's reasoning is reclaimed only when the host's own retention drops it
+    (route/model switch, TTL, a native compaction); MC's contribution is limited to the
+    body. Declared rather than silently skipped.
+
 ## Resolved since the v1 ledger was written
 
 - **Transcript FTS indexing — wired through the pass lane (T045).** The core
