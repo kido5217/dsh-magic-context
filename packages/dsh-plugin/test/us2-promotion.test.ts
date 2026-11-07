@@ -28,8 +28,8 @@ import {
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { type AdapterHandle, mountAdapter } from "../src/index.js";
-import { setPressure, seedSession, stepFor } from "./us1-support.js";
 import { TestDshHost } from "./double.js";
+import { seedSession, setPressure, stepFor } from "./us1-support.js";
 
 let db: ContextDatabase;
 let projectDir: string;

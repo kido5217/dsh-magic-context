@@ -14,12 +14,15 @@
  */
 import { describe, expect, test } from "bun:test";
 import { Context } from "@deepseek-ai/cordis";
-import type { SessionEvent } from "@deepseek-ai/dsh-session";
-import { deriveEventMessage, foldSurface } from "@deepseek-ai/dsh-session";
-import { SessionStore } from "@deepseek-ai/dsh-session";
-import type { SessionMessageProjection } from "@deepseek-ai/dsh-session/surface";
-import { MessageId } from "@deepseek-ai/dsh-llm";
 import type { Message } from "@deepseek-ai/dsh-llm";
+import { MessageId } from "@deepseek-ai/dsh-llm";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import {
+	deriveEventMessage,
+	foldSurface,
+	SessionStore,
+} from "@deepseek-ai/dsh-session";
+import type { SessionMessageProjection } from "@deepseek-ai/dsh-session/surface";
 import { SessionSeq } from "@deepseek-ai/dsh-session/types";
 
 function event(value: Record<string, unknown>): SessionEvent {
@@ -33,14 +36,23 @@ function logWithProjection(rewritten: string): SessionEvent[] {
 			seq: 0,
 			type: "user/message",
 			surfaceOp: "append",
-			data: { id: "m1", role: "user", content: [{ type: "text", text: "hi" }], source: { kind: "user" } },
+			data: {
+				id: "m1",
+				role: "user",
+				content: [{ type: "text", text: "hi" }],
+				source: { kind: "user" },
+			},
 		}),
 		event({
 			seq: 1,
 			type: "assistant/message",
 			surfaceOp: "append",
 			data: {
-				message: { id: "m2", role: "assistant", content: [{ type: "text", text: "the original long answer" }] },
+				message: {
+					id: "m2",
+					role: "assistant",
+					content: [{ type: "text", text: "the original long answer" }],
+				},
 			},
 		}),
 		event({
@@ -56,14 +68,26 @@ function logWithProjection(rewritten: string): SessionEvent[] {
 const rewriteAssistant: SessionMessageProjection = {
 	type: "plugin:magic-context/rewrite" as SessionMessageProjection["type"],
 	project(candidate, context) {
-		const data = (candidate as unknown as { data: { targetSeq: number; messageId: string; text: string } }).data;
+		const data = (
+			candidate as unknown as {
+				data: { targetSeq: number; messageId: string; text: string };
+			}
+		).data;
 		// The context carries the contiguous event window; the target is read
 		// from the log and re-derived, so a projection chains onto whatever the
 		// current content is (including an earlier projection's output).
-		const targetEvent = context.events[data.targetSeq - Number(context.baseSeq)];
-		const target = targetEvent === undefined ? null : deriveEventMessage(targetEvent);
-		if (target === null) throw new Error(`rewrite target ${String(data.targetSeq)} is not a current message`);
-		const projected: Message = { ...target, content: [{ type: "text", text: data.text }] };
+		const targetEvent =
+			context.events[data.targetSeq - Number(context.baseSeq)];
+		const target =
+			targetEvent === undefined ? null : deriveEventMessage(targetEvent);
+		if (target === null)
+			throw new Error(
+				`rewrite target ${String(data.targetSeq)} is not a current message`,
+			);
+		const projected: Message = {
+			...target,
+			content: [{ type: "text", text: data.text }],
+		};
 		return new Map([[SessionSeq(data.targetSeq), projected]]);
 	},
 };
@@ -76,7 +100,9 @@ describe("plugin message projection", () => {
 		// no node) and the edit applies to content, not structure.
 		expect(fold.nodes.map(Number)).toEqual([0, 1]);
 		const projected = fold.projectedMessages.get(SessionSeq(1));
-		expect(projected?.content).toEqual([{ type: "text", text: "[folded §1§]" }]);
+		expect(projected?.content).toEqual([
+			{ type: "text", text: "[folded §1§]" },
+		]);
 		expect(String(projected?.id)).toBe("m2");
 	});
 
@@ -86,7 +112,9 @@ describe("plugin message projection", () => {
 		expect(fold.nodes.map(Number)).toEqual([0, 1]);
 		expect(fold.projectedMessages.size).toBe(0);
 		// The durable assistant event still derives its original content.
-		expect(deriveEventMessage(events[1]!)?.content).toEqual([{ type: "text", text: "the original long answer" }]);
+		expect(deriveEventMessage(events[1]!)?.content).toEqual([
+			{ type: "text", text: "the original long answer" },
+		]);
 	});
 
 	test("a projection cannot invent a message or change identity", () => {
@@ -97,7 +125,12 @@ describe("plugin message projection", () => {
 				new Map([
 					[
 						SessionSeq(1),
-						({ id: MessageId("forged"), role: "assistant", content: [{ type: "text", text: "forged" }], source: { kind: "assistant" } } as unknown) as Message,
+						{
+							id: MessageId("forged"),
+							role: "assistant",
+							content: [{ type: "text", text: "forged" }],
+							source: { kind: "assistant" },
+						} as unknown as Message,
 					],
 				]),
 		};
@@ -105,7 +138,9 @@ describe("plugin message projection", () => {
 		// The fold stores whatever the interpreter returns; identity preservation
 		// is therefore the plugin's obligation (asserted by our own tests), and
 		// the surface cannot be structurally rewritten this way.
-		expect(String(fold.projectedMessages.get(SessionSeq(1))?.id)).toBe("forged");
+		expect(String(fold.projectedMessages.get(SessionSeq(1))?.id)).toBe(
+			"forged",
+		);
 		expect(fold.nodes.map(Number)).toEqual([0, 1]);
 	});
 

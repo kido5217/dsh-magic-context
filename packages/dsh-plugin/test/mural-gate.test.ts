@@ -22,7 +22,9 @@ import { describe, expect, test } from "bun:test";
 import AttachmentStore from "@deepseek-ai/dsh-attachment";
 
 /** Does this route accept image input? Unknown ⇒ false (text-only). */
-export function acceptsImage(modalities: readonly string[] | undefined): boolean {
+export function acceptsImage(
+	modalities: readonly string[] | undefined,
+): boolean {
 	return modalities?.includes("image") === true;
 }
 
@@ -32,7 +34,9 @@ describe("mural gate", () => {
 		// abstract prototype); `saveImages` is the concrete ordered commit the
 		// head path uses, and it accepts the single-image form as a batch.
 		expect(typeof AttachmentStore.prototype.saveImages).toBe("function");
-		expect(typeof AttachmentStore.prototype.admitPromptContent).toBe("function");
+		expect(typeof AttachmentStore.prototype.admitPromptContent).toBe(
+			"function",
+		);
 	});
 
 	test("image capability gates the mural, unknown capabilities do not", () => {

@@ -7,7 +7,12 @@
  * at most once (a second overflow means folding cannot fix it).
  */
 import { describe, expect, test } from "bun:test";
-import { OverflowLedger, OverflowRecoveryGate, detectOverflowError, recoverOverflow } from "../src/lanes/overflow.js";
+import {
+	detectOverflowError,
+	OverflowLedger,
+	OverflowRecoveryGate,
+	recoverOverflow,
+} from "../src/lanes/overflow.js";
 
 const OVERFLOW_ERROR = new Error(
 	"400 Bad Request: prompt is too long: 210000 tokens > 128000 maximum context length",
@@ -28,7 +33,11 @@ describe("overflow recovery", () => {
 		expect(learned?.limit).toBeDefined();
 		expect(learned!.limit!).toBeLessThanOrEqual(128_000);
 		// A later report of a larger limit cannot widen what we already learned.
-		ledger.record("s-of", { isOverflow: true, reportedLimit: 900_000 }, 200_000);
+		ledger.record(
+			"s-of",
+			{ isOverflow: true, reportedLimit: 900_000 },
+			200_000,
+		);
 		expect(ledger.effectiveWindow("s-of", 200_000)).toBe(learned!.limit!);
 		// A larger advertised window is clamped to the learned one.
 		expect(ledger.effectiveWindow("s-of", 1_000_000)).toBe(learned!.limit!);

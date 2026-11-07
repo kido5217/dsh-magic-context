@@ -22,19 +22,27 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import { insertTag } from "@magic-context/core/features/magic-context/storage-tags";
-import { getPendingOps, queuePendingOp, removePendingOp } from "@magic-context/core/features/magic-context/storage-ops";
-import { markMessageIndexDirty } from "@magic-context/core/features/magic-context/message-index";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
+import { markMessageIndexDirty } from "@magic-context/core/features/magic-context/message-index";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
+import {
+	getPendingOps,
+	queuePendingOp,
+	removePendingOp,
+} from "@magic-context/core/features/magic-context/storage-ops";
+import { insertTag } from "@magic-context/core/features/magic-context/storage-tags";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { createPromptSurfaceRuntime } from "@magic-context/core/shared/prompt-surface-runtime";
 import { SessionMapping } from "../src/sessions/mapping.js";
+import type { McReplacementContent } from "../src/surface/events.js";
 import { ManagedEdits } from "../src/surface/managed-edits.js";
 import { registerMagicContextToolsDsh } from "../src/tools/index.js";
-import type { McReplacementContent } from "../src/surface/events.js";
-import { McHost, callTool } from "./fixtures-dsh.js";
+import { callTool, McHost } from "./fixtures-dsh.js";
 
 const DSH_SESSION = "us3-attr-dsh-7741";
 /** A session owned by another harness on the same shared store. */
@@ -56,7 +64,9 @@ const seedDumps: Array<{ table: string; dump: string }> = [];
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db") }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+	}))!;
 	expect(db).toBeTruthy();
 	projectDir = mkdtempSync(join(tmpdir(), "dsh-us3-attr-proj-"));
 });
@@ -69,7 +79,9 @@ afterAll(async () => {
 
 describe("attribution: every session-scoped adapter write carries harness='dsh' (FR-003)", () => {
 	test("cross-harness 'pi' rows are seeded on all audited session-scoped tables", () => {
-		db.prepare("INSERT INTO session_meta (session_id, harness) VALUES (?, 'pi')").run(PI_SESSION);
+		db.prepare(
+			"INSERT INTO session_meta (session_id, harness) VALUES (?, 'pi')",
+		).run(PI_SESSION);
 		db.prepare(
 			"INSERT INTO pending_ops (session_id, tag_id, operation, queued_at, harness) VALUES (?, 9, 'drop', ?, 'pi')",
 		).run(PI_SESSION, PI_STAMP);
@@ -82,10 +94,31 @@ describe("attribution: every session-scoped adapter write carries harness='dsh' 
 
 		// Capture full-row dumps BEFORE any adapter write happens.
 		const seeds = [
-			["session_meta", dumpRow("SELECT * FROM session_meta WHERE session_id = ?", PI_SESSION)],
-			["pending_ops", dumpRow("SELECT * FROM pending_ops WHERE session_id = ? AND tag_id = 9", PI_SESSION)],
-			["notes", dumpRow("SELECT * FROM notes WHERE session_id = ? AND content = 'pi-side note'", PI_SESSION)],
-			["message_history_index", dumpRow("SELECT * FROM message_history_index WHERE session_id = ?", PI_SESSION)],
+			[
+				"session_meta",
+				dumpRow("SELECT * FROM session_meta WHERE session_id = ?", PI_SESSION),
+			],
+			[
+				"pending_ops",
+				dumpRow(
+					"SELECT * FROM pending_ops WHERE session_id = ? AND tag_id = 9",
+					PI_SESSION,
+				),
+			],
+			[
+				"notes",
+				dumpRow(
+					"SELECT * FROM notes WHERE session_id = ? AND content = 'pi-side note'",
+					PI_SESSION,
+				),
+			],
+			[
+				"message_history_index",
+				dumpRow(
+					"SELECT * FROM message_history_index WHERE session_id = ?",
+					PI_SESSION,
+				),
+			],
 		] as const;
 		for (const [, dump] of seeds) expect(dump).not.toBe("null");
 		seedDumps.push(...seeds.map(([table, dump]) => ({ table, dump })));
@@ -102,22 +135,29 @@ describe("attribution: every session-scoped adapter write carries harness='dsh' 
 		const session = host.addSession({ id: DSH_SESSION }, [0, 1, 2, 3]);
 		insertTag(db, DSH_SESSION, "msg-a", "message", 64, 1);
 		const edits = new ManagedEdits(host);
-		const shadow = await edits.runManagedChange("drop", "chg-attr-1", DSH_SESSION, {
-			decision: async () => {
-				queuePendingOp(db, DSH_SESSION, 1, "drop");
-				return [1];
+		const shadow = await edits.runManagedChange(
+			"drop",
+			"chg-attr-1",
+			DSH_SESSION,
+			{
+				decision: async () => {
+					queuePendingOp(db, DSH_SESSION, 1, "drop");
+					return [1];
+				},
+				effect: async (targets: number[]) => {
+					const { replacementSeq } = await session.replaceSurface(
+						[
+							{ type: "text", text: "[dropped §1§]" },
+						] satisfies McReplacementContent,
+						targets[0]!,
+						targets[0]!,
+						targets,
+					);
+					removePendingOp(db, DSH_SESSION, targets[0]!);
+					return { replacementSeq, shadowedSeqs: targets };
+				},
 			},
-			effect: async (targets: number[]) => {
-				const { replacementSeq } = await session.replaceSurface(
-					[{ type: "text", text: "[dropped §1§]" }] satisfies McReplacementContent,
-					targets[0]!,
-					targets[0]!,
-					targets,
-				);
-				removePendingOp(db, DSH_SESSION, targets[0]!);
-				return { replacementSeq, shadowedSeqs: targets };
-			},
-		});
+		);
 		expect(shadow.replacementSeq).toBeTypeOf("number");
 		// The decision row existed with our harness while it was queued — read
 		// attribution before consumption via the audit query below (the row is
@@ -130,7 +170,11 @@ describe("attribution: every session-scoped adapter write carries harness='dsh' 
 			sessionId: () => DSH_SESSION,
 			projectDir,
 			protectedTags: 20,
-			promptSurfaceRuntime: createPromptSurfaceRuntime({ harness: "dsh", directory: projectDir, warn: () => {} }),
+			promptSurfaceRuntime: createPromptSurfaceRuntime({
+				harness: "dsh",
+				directory: projectDir,
+				warn: () => {},
+			}),
 			memoryEnabled: true,
 		});
 		const noteReply = await callTool(host, "ctx_note", {
@@ -141,11 +185,14 @@ describe("attribution: every session-scoped adapter write carries harness='dsh' 
 		expect(noteReply).toMatch(/^Saved session note #\d+\./);
 		const memoryReply = await callTool(host, "ctx_memory", {
 			action: "write",
-			content: "Attribution audit rule: session-scoped writes must carry harness.",
+			content:
+				"Attribution audit rule: session-scoped writes must carry harness.",
 			category: "PROJECT_RULES",
 			ids: [],
 		});
-		expect(memoryReply).toMatch(/^Saved memory \[ID: \d+\] in PROJECT_RULES\.$/);
+		expect(memoryReply).toMatch(
+			/^Saved memory \[ID: \d+\] in PROJECT_RULES\.$/,
+		);
 
 		// 5. History-index write: core message-index progress insert carries the
 		//    harness column (see file header for why this is the reachable path).
@@ -153,12 +200,20 @@ describe("attribution: every session-scoped adapter write carries harness='dsh' 
 	});
 
 	test("SELECT DISTINCT harness: 'dsh' on every session-scoped table this adapter writes", () => {
-		const tables = ["session_meta", "pending_ops", "notes", "message_history_index"] as const;
+		const tables = [
+			"session_meta",
+			"pending_ops",
+			"notes",
+			"message_history_index",
+		] as const;
 		for (const table of tables) {
 			const rows = db
 				.prepare(`SELECT DISTINCT harness FROM ${table} WHERE session_id = ?`)
 				.all(DSH_SESSION) as Array<{ harness: string }>;
-			expect(rows.map((row) => row.harness), table).toEqual(["dsh"]);
+			expect(
+				rows.map((row) => row.harness),
+				table,
+			).toEqual(["dsh"]);
 		}
 		// The store as a whole keeps the two harnesses distinct.
 		const distinct = db
@@ -169,23 +224,40 @@ describe("attribution: every session-scoped adapter write carries harness='dsh' 
 	});
 
 	test("project-scoped writes carry no harness attribution (memories)", () => {
-		const columns = db.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
+		const columns = db.prepare("PRAGMA table_info(memories)").all() as Array<{
+			name: string;
+		}>;
 		expect(columns.some((column) => column.name === "harness")).toBe(false);
 		const row = db
-			.prepare("SELECT project_path, source_session_id FROM memories WHERE source_session_id = ?")
-			.get(DSH_SESSION) as { project_path: string; source_session_id: string } | undefined;
+			.prepare(
+				"SELECT project_path, source_session_id FROM memories WHERE source_session_id = ?",
+			)
+			.get(DSH_SESSION) as
+			| { project_path: string; source_session_id: string }
+			| undefined;
 		expect(row?.source_session_id).toBe(DSH_SESSION);
-		expect(row?.project_path).toBe(resolveProjectIdentityForSession(projectDir));
+		expect(row?.project_path).toBe(
+			resolveProjectIdentityForSession(projectDir),
+		);
 	});
 
 	test("cross-harness 'pi' rows are byte-identical after all adapter writes", () => {
 		for (const { table, dump } of seedDumps) {
 			const now =
 				table === "pending_ops"
-					? dumpRow("SELECT * FROM pending_ops WHERE session_id = ? AND tag_id = 9", PI_SESSION)
+					? dumpRow(
+							"SELECT * FROM pending_ops WHERE session_id = ? AND tag_id = 9",
+							PI_SESSION,
+						)
 					: table === "notes"
-						? dumpRow("SELECT * FROM notes WHERE session_id = ? AND content = 'pi-side note'", PI_SESSION)
-						: dumpRow(`SELECT * FROM ${table} WHERE session_id = ?`, PI_SESSION);
+						? dumpRow(
+								"SELECT * FROM notes WHERE session_id = ? AND content = 'pi-side note'",
+								PI_SESSION,
+							)
+						: dumpRow(
+								`SELECT * FROM ${table} WHERE session_id = ?`,
+								PI_SESSION,
+							);
 			// Byte compare of the whole row, before vs. after the adapter ran.
 			expect(now, table).toBe(dump);
 		}

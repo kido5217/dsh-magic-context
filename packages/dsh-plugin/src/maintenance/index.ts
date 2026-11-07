@@ -18,6 +18,7 @@ import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
+import type { RetrospectiveRawProvider } from "@magic-context/core/features/magic-context/dreamer/retrospective-raw-provider";
 import { buildDreamTaskRuntimeConfigs } from "@magic-context/core/features/magic-context/dreamer/task-config";
 import { createDreamTaskExecutor } from "@magic-context/core/features/magic-context/dreamer/task-executor";
 import {
@@ -31,9 +32,11 @@ import type {
 } from "@magic-context/core/features/magic-context/dreamer/task-scheduler";
 import { runManualDream } from "@magic-context/core/features/magic-context/dreamer/task-scheduler";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import type { RawMessageProvider } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import {
 	beginBootQuietPeriod,
 	bootQuietRemainingMs,
+	setBootQuietPeriodForTests,
 } from "@magic-context/core/plugin/boot-quiet";
 import { log, sessionLog } from "@magic-context/core/shared/logger";
 import { reapMaintenanceOrphans } from "./orphans.js";
@@ -62,6 +65,11 @@ export interface MaintenanceMountDeps {
 	/** Project filesystem directory the maintenance drain owns. */
 	readonly projectDir: string;
 	readonly projectIdentity: string;
+	/** DSH session-log raw providers (retrospective seed, orientation seed). */
+	readonly retrospectiveRawProvider?: RetrospectiveRawProvider;
+	readonly primerRawProviderFactory?: (
+		sessionId: string,
+	) => Promise<RawMessageProvider | null> | RawMessageProvider | null;
 }
 
 export interface MaintenanceHandle {
@@ -80,9 +88,30 @@ function maintenanceSessionRoot(): string {
 	return join(home, "sessions");
 }
 
+/**
+ * Whether the maintenance lane can run on this machine: an explicit DSH-side
+ * dreamer model block (`dreamer.dsh`, falling back to `dreamer.pi` — both name
+ * a serverless-host completion route) and a lane that is not disabled. This is
+ * the single gate shared by the mount and by every user-facing capability that
+ * maintenance must service (smart notes, `/ctx-dream`); a half-configured
+ * lane must neither churn failing runs nor promise evaluation it cannot do.
+ */
+export function maintenanceRunnable(config: {
+	dreamer?: Record<string, unknown> | null;
+}): boolean {
+	const dreamer = config.dreamer;
+	if (!dreamer) return false;
+	if (dreamer["enabled"] === false) return false;
+	return dreamer["dsh"] !== undefined || dreamer["pi"] !== undefined;
+}
+
 export function startMaintenance(
 	deps: MaintenanceMountDeps,
 ): MaintenanceHandle {
+	// Live-gate seam: the fixed two-minute boot quiet is correct for real use
+	// and pure latency for the V5 evidence run. Opt in explicitly.
+	if (process.env["MAGIC_CONTEXT_TEST_NO_QUIET"] === "1")
+		setBootQuietPeriodForTests(0);
 	beginBootQuietPeriod();
 	const removed = reapMaintenanceOrphans(maintenanceSessionRoot());
 	if (removed.length > 0)
@@ -124,6 +153,12 @@ export function startMaintenance(
 		sessionDirectory: deps.projectDir,
 		openOpenCodeDb: () => null,
 		smartNotesEnabled,
+		...(deps.retrospectiveRawProvider !== undefined
+			? { retrospectiveRawProvider: deps.retrospectiveRawProvider }
+			: {}),
+		...(deps.primerRawProviderFactory !== undefined
+			? { primerRawProviderFactory: deps.primerRawProviderFactory }
+			: {}),
 		...(language !== undefined ? { language } : {}),
 	};
 	const singleShotExecutor = createDreamTaskExecutor({
@@ -146,8 +181,16 @@ export function startMaintenance(
 		executor,
 	};
 
+	const tickEnv = Number(process.env["MAGIC_CONTEXT_TEST_TICK_MS"]);
+	const jitterEnv = Number(process.env["MAGIC_CONTEXT_TEST_JITTER_MS"]);
 	const scheduler = new MaintenanceScheduler({
 		db: deps.db,
+		...(Number.isFinite(tickEnv) && tickEnv > 0
+			? { tickIntervalMs: tickEnv }
+			: {}),
+		...(Number.isFinite(jitterEnv) && jitterEnv >= 0
+			? { jitterSlotMs: jitterEnv }
+			: {}),
 		setInterval: (callback, ms) => {
 			const timer = setInterval(callback, ms);
 			return () => {

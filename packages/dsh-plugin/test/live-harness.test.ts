@@ -8,7 +8,11 @@
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { createLiveHome, type LiveHome } from "./live-home.js";
-import { MOCK_API_KEY_ENV, mockProviderEnv, startMockProvider } from "./mock-provider.js";
+import {
+	MOCK_API_KEY_ENV,
+	mockProviderEnv,
+	startMockProvider,
+} from "./mock-provider.js";
 
 const provider = startMockProvider();
 let home: LiveHome | undefined;
@@ -31,7 +35,9 @@ describe("live harness", () => {
 			defaultModel: "mock-model",
 		});
 		provider.script([{ text: "hello from the mock" }]);
-		const result = await home.runHeadlessAsync("say hello", { env: mockProviderEnv() });
+		const result = await home.runHeadlessAsync("say hello", {
+			env: mockProviderEnv(),
+		});
 		expect(result.status).toBe(0);
 		expect(provider.requests.length).toBeGreaterThan(0);
 		const messages = provider.messagesOf(0);

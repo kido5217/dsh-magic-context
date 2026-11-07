@@ -103,10 +103,9 @@ export class MaintenanceScheduler {
 		const slot = this.options.jitterSlotMs ?? MAINTENANCE_JITTER_SLOT_MS;
 		for (const identity of this.projects.keys())
 			this.quietUntil.set(identity, now + quiet + jitterFor(identity, slot));
-		this.disposer = this.options.setInterval(
-			() => void this.runTick("interval"),
-			this.options.tickIntervalMs ?? MAINTENANCE_TICK_MS,
-		);
+		this.disposer = this.options.setInterval(() => {
+			void this.runTick("interval");
+		}, this.options.tickIntervalMs ?? MAINTENANCE_TICK_MS);
 	}
 
 	stop(): void {

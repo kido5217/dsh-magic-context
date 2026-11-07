@@ -6,12 +6,22 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { getCompartments } from "@magic-context/core/features/magic-context/compartment-storage";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
-import { type AdapterHandle } from "../src/index.js";
+import type { AdapterHandle } from "../src/index.js";
 import { TestDshHost } from "./double.js";
-import { clearPressure, seedSession, setPressure, stepFor, us1Mount } from "./us1-support.js";
+import {
+	clearPressure,
+	seedSession,
+	setPressure,
+	stepFor,
+	us1Mount,
+} from "./us1-support.js";
 
 let db: ContextDatabase;
 let host: TestDshHost;
@@ -19,7 +29,10 @@ let handle: AdapterHandle | undefined;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 });
 
 afterAll(async () => {
@@ -31,7 +44,13 @@ afterAll(async () => {
 const refusalOf = (sessionId: string) =>
 	host.sessions
 		.get(sessionId)!
-		.notices.filter((notice) => notice.content.some((block) => typeof (block as { text?: string }).text === "string" && (block as { text: string }).text.includes("Magic Context refused")));
+		.notices.filter((notice) =>
+			notice.content.some(
+				(block) =>
+					typeof (block as { text?: string }).text === "string" &&
+					(block as { text: string }).text.includes("Magic Context refused"),
+			),
+		);
 
 describe("US1 lanes: fold-first, refusal episode, fail-closed", () => {
 	test("force band calls the model BEFORE publishing (no decision without a summary)", async () => {

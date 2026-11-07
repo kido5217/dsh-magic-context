@@ -19,7 +19,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { getLogFilePath } from "@magic-context/core/shared/logger";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import { insertMemory } from "@magic-context/core/features/magic-context/memory/storage-memory";
 import { computeCueContentHash } from "@magic-context/core/features/magic-context/mural/storage-mural-cues";
@@ -29,6 +28,7 @@ import {
 	openDatabaseAsync,
 } from "@magic-context/core/features/magic-context/storage-db";
 import { setHarness } from "@magic-context/core/shared/harness";
+import { getLogFilePath } from "@magic-context/core/shared/logger";
 import { createLiveHome, type LiveHome } from "./live-home.js";
 import {
 	MOCK_API_KEY_ENV,
@@ -95,10 +95,7 @@ function muralLogLines(): string {
 			if (entry.isDirectory()) walk(path);
 			else {
 				for (const line of readFileSync(path, "utf8").split("\n"))
-					if (
-						line.includes("mural") &&
-						line.includes("[magic-context]")
-					)
+					if (line.includes("mural") && line.includes("[magic-context]"))
 						hits.push(line);
 			}
 		}

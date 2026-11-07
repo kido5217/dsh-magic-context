@@ -5,11 +5,17 @@
  */
 import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
 import type { ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
-import { mountAdapter, type AdapterHandle, type MountOptions } from "../src/index.js";
-import type { FakeSession } from "./double.js";
-import { TestDshHost } from "./double.js";
+import {
+	type AdapterHandle,
+	type MountOptions,
+	mountAdapter,
+} from "../src/index.js";
+import type { FakeSession, TestDshHost } from "./double.js";
 
-const WORDS = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu".split(" ");
+const WORDS =
+	"alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu".split(
+		" ",
+	);
 
 /**
  * Deterministic message payload with real text entropy (the shared store's
@@ -27,28 +33,52 @@ export function bigMessage(index: number): string {
 }
 
 /** Seed a session whose initial surface is seqs 0..count-1 with real text. */
-export function seedSession(host: TestDshHost, id: string, count: number, origin?: "subagent"): FakeSession {
+export function seedSession(
+	host: TestDshHost,
+	id: string,
+	count: number,
+	origin?: "subagent",
+): FakeSession {
 	const surface = Array.from({ length: count }, (_, i) => i);
-	const session = host.addSession(origin === undefined ? { id } : { id, origin, parentSession: "root", delegationDepth: 1 }, surface);
-	for (let i = 0; i < count; i += 1) session.seedMessage(i, `m${String(i)}`, bigMessage(i), i % 2 === 0 ? "user" : "assistant");
+	const session = host.addSession(
+		origin === undefined
+			? { id }
+			: { id, origin, parentSession: "root", delegationDepth: 1 },
+		surface,
+	);
+	for (let i = 0; i < count; i += 1)
+		session.seedMessage(
+			i,
+			`m${String(i)}`,
+			bigMessage(i),
+			i % 2 === 0 ? "user" : "assistant",
+		);
 	return session;
 }
 
-export function us1Mount(host: TestDshHost, db: ContextDatabase, extra?: Partial<MountOptions>): AdapterHandle {
-	return mountAdapter(
-		host,
-		MagicContextConfigSchema.parse({}),
-		db,
-		{
-			readSessionLog: (sessionId) => host.sessions.get(sessionId)?.logRecords() ?? [],
-			historianRoute: { provider: "aux", model: "hist-1" },
-			...extra,
-		},
-	);
+export function us1Mount(
+	host: TestDshHost,
+	db: ContextDatabase,
+	extra?: Partial<MountOptions>,
+): AdapterHandle {
+	return mountAdapter(host, MagicContextConfigSchema.parse({}), db, {
+		readSessionLog: (sessionId) =>
+			host.sessions.get(sessionId)?.logRecords() ?? [],
+		historianRoute: { provider: "aux", model: "hist-1" },
+		...extra,
+	});
 }
 
-export function setPressure(host: TestDshHost, sessionId: string, tokens: number, window = 10_000): void {
-	host.pressureReadings.set(sessionId, { pressureTokens: tokens, contextWindow: window });
+export function setPressure(
+	host: TestDshHost,
+	sessionId: string,
+	tokens: number,
+	window = 10_000,
+): void {
+	host.pressureReadings.set(sessionId, {
+		pressureTokens: tokens,
+		contextWindow: window,
+	});
 }
 
 export function clearPressure(host: TestDshHost, sessionId: string): void {
@@ -57,6 +87,10 @@ export function clearPressure(host: TestDshHost, sessionId: string): void {
 
 export const preStep = { sessionId: "ignored", turn: 1, step: 1 } as const;
 
-export function stepFor(sessionId: string): { sessionId: string; turn: number; step: number } {
+export function stepFor(sessionId: string): {
+	sessionId: string;
+	turn: number;
+	step: number;
+} {
 	return { sessionId, turn: 1, step: 1 };
 }

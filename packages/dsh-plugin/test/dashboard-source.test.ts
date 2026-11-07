@@ -25,7 +25,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createLiveHome, type LiveHome } from "./live-home.js";
-import { MOCK_API_KEY_ENV, mockProviderEnv, startMockProvider } from "./mock-provider.js";
+import {
+	MOCK_API_KEY_ENV,
+	mockProviderEnv,
+	startMockProvider,
+} from "./mock-provider.js";
 
 const provider = startMockProvider();
 let home: LiveHome | undefined;
@@ -46,7 +50,8 @@ function findSessionFile(root: string): string | undefined {
 			const sessionDir = join(projectDir, session);
 			if (!statSync(sessionDir).isDirectory()) continue;
 			for (const file of readdirSync(sessionDir)) {
-				if (file.startsWith("session.") && file.includes("jsonl")) return join(sessionDir, file);
+				if (file.startsWith("session.") && file.includes("jsonl"))
+					return join(sessionDir, file);
 			}
 		}
 	}
@@ -66,13 +71,17 @@ describe("dashboard source", () => {
 			defaultModel: "mock-model",
 		});
 		provider.script([{ text: "a real assistant reply" }]);
-		const result = await home.runHeadlessAsync("dashboard probe", { env: mockProviderEnv() });
+		const result = await home.runHeadlessAsync("dashboard probe", {
+			env: mockProviderEnv(),
+		});
 		expect(result.status).toBe(0);
 
 		const file = findSessionFile(home.home);
 		expect(file).toBeDefined();
 		// `<home>/sessions/<project>/<sessionId>/session.v4.jsonl.zstd`
-		expect(file!).toMatch(/sessions\/.+\/session-[^/]+\/session\..+jsonl\.zstd$/);
+		expect(file!).toMatch(
+			/sessions\/.+\/session-[^/]+\/session\..+jsonl\.zstd$/,
+		);
 
 		// A zstd frame, and it decodes to one JSON event per line.
 		const raw = readFileSync(file!);
@@ -81,7 +90,10 @@ describe("dashboard source", () => {
 		const events = decoded
 			.split("\n")
 			.filter((line) => line.trim().length > 0)
-			.map((line) => JSON.parse(line) as { type?: string; seq?: number; data?: unknown });
+			.map(
+				(line) =>
+					JSON.parse(line) as { type?: string; seq?: number; data?: unknown },
+			);
 		expect(events.length).toBeGreaterThan(0);
 		expect(events.every((event) => typeof event.type === "string")).toBe(true);
 		// The assistant reply is present in the host's own log — the dashboard

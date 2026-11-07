@@ -115,8 +115,12 @@ describe("V1 live", () => {
 		// T005's live half: a TOOL RESULT rewritten in place reaches the next
 		// request as a tool message carrying the placeholder — the call identity
 		// survived (the message is still `tool`, not a user notice).
-		const toolWithPlaceholder = (withHistory!.body["messages"] as { role?: string; content?: unknown }[]).some(
-			(message) => message.role === "tool" && JSON.stringify(message.content ?? "").includes("[dropped §"),
+		const toolWithPlaceholder = (
+			withHistory!.body["messages"] as { role?: string; content?: unknown }[]
+		).some(
+			(message) =>
+				message.role === "tool" &&
+				JSON.stringify(message.content ?? "").includes("[dropped §"),
 		);
 		expect(toolWithPlaceholder).toBe(true);
 		expect(compartments.n).toBe(0);

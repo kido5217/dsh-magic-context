@@ -21,10 +21,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { setHarness } from "@magic-context/core/shared/harness";
-import { mountAdapter, type AdapterHandle } from "../src/index.js";
+import { type AdapterHandle, mountAdapter } from "../src/index.js";
 import { TestDshHost } from "./double.js";
 
 let db: ContextDatabase;
@@ -33,7 +37,10 @@ let host: TestDshHost;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 });
 
 afterAll(async () => {
@@ -46,19 +53,39 @@ describe("post-execute verdict", () => {
 		host = new TestDshHost();
 		handle = mountAdapter(host, MagicContextConfigSchema.parse({}), db);
 		const off = host.onPostToolExecute((info) =>
-			info.toolName === "read" ? { content: [{ type: "text", text: "[dropped §7§]" }] } : undefined,
+			info.toolName === "read"
+				? { content: [{ type: "text", text: "[dropped §7§]" }] }
+				: undefined,
 		);
-		const rewritten = await host.firePostTool({ sessionId: "s-pe", toolName: "read", text: "huge output" });
-		expect(rewritten?.content).toEqual([{ type: "text", text: "[dropped §7§]" }]);
-		const untouched = await host.firePostTool({ sessionId: "s-pe", toolName: "grep", text: "huge output" });
+		const rewritten = await host.firePostTool({
+			sessionId: "s-pe",
+			toolName: "read",
+			text: "huge output",
+		});
+		expect(rewritten?.content).toEqual([
+			{ type: "text", text: "[dropped §7§]" },
+		]);
+		const untouched = await host.firePostTool({
+			sessionId: "s-pe",
+			toolName: "grep",
+			text: "huge output",
+		});
 		expect(untouched).toBeUndefined();
 		off();
 	});
 
 	test("additional context rides the same decision", async () => {
-		const off = host.onPostToolExecute(() => ({ additionalContext: [{ type: "text", text: "nudge" }] }));
-		const verdict = await host.firePostTool({ sessionId: "s-pe", toolName: "read", text: "out" });
-		expect(verdict?.additionalContext).toEqual([{ type: "text", text: "nudge" }]);
+		const off = host.onPostToolExecute(() => ({
+			additionalContext: [{ type: "text", text: "nudge" }],
+		}));
+		const verdict = await host.firePostTool({
+			sessionId: "s-pe",
+			toolName: "read",
+			text: "out",
+		});
+		expect(verdict?.additionalContext).toEqual([
+			{ type: "text", text: "nudge" },
+		]);
 		off();
 	});
 

@@ -87,7 +87,10 @@ function sseChunk(
 }
 
 /** Turn one scripted reply into the HTTP response the client expects. */
-function respondWith(reply: MockReply, body: Record<string, unknown>): Response {
+function respondWith(
+	reply: MockReply,
+	body: Record<string, unknown>,
+): Response {
 	if (reply.failStatus !== undefined) {
 		return new Response(
 			JSON.stringify({

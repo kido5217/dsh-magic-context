@@ -20,10 +20,14 @@ import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 
 /** One registered pre-step listener, innermost last (waterfall order). */
-type Listener = (next: () => Promise<PreStepDecision>) => Promise<PreStepDecision>;
+type Listener = (
+	next: () => Promise<PreStepDecision>,
+) => Promise<PreStepDecision>;
 
 /** Model the host waterfall: innermost decision propagates out through `next()`. */
-async function waterfall(listeners: readonly Listener[]): Promise<PreStepDecision> {
+async function waterfall(
+	listeners: readonly Listener[],
+): Promise<PreStepDecision> {
 	const chain = async (index: number): Promise<PreStepDecision> => {
 		const listener = listeners[index];
 		if (listener === undefined) return { kind: "enter", messages: [] };
@@ -33,7 +37,10 @@ async function waterfall(listeners: readonly Listener[]): Promise<PreStepDecisio
 }
 
 function userMessage(text: string): UserMessage {
-	return { role: "user", content: [{ type: "text", text }] } as unknown as UserMessage;
+	return {
+		role: "user",
+		content: [{ type: "text", text }],
+	} as unknown as UserMessage;
 }
 
 describe("pre-step batch", () => {
@@ -42,12 +49,20 @@ describe("pre-step batch", () => {
 			async (next) => {
 				const inner = await next();
 				if (inner.kind !== "enter") return inner;
-				return { ...inner, messages: [userMessage("outer"), ...inner.messages] };
+				return {
+					...inner,
+					messages: [userMessage("outer"), ...inner.messages],
+				};
 			},
 			async () => ({ kind: "enter", messages: [userMessage("inner")] }),
 		]);
 		expect(decision.kind).toBe("enter");
-		const texts = decision.kind === "enter" ? decision.messages.map((message) => (message.content[0] as { text: string }).text) : [];
+		const texts =
+			decision.kind === "enter"
+				? decision.messages.map(
+						(message) => (message.content[0] as { text: string }).text,
+					)
+				: [];
 		expect(texts).toEqual(["outer", "inner"]);
 	});
 
@@ -71,7 +86,12 @@ describe("pre-step batch", () => {
 		// Compile-time evidence: the enter decision's payload is UserMessage[].
 		// A history array (assistant/tool nodes) cannot be expressed, which is
 		// why the adapter's lanes write durable surface edits instead.
-		const decision: PreStepDecision = { kind: "enter", messages: [userMessage("batch")] };
-		expect(decision.kind === "enter" && Array.isArray(decision.messages)).toBe(true);
+		const decision: PreStepDecision = {
+			kind: "enter",
+			messages: [userMessage("batch")],
+		};
+		expect(decision.kind === "enter" && Array.isArray(decision.messages)).toBe(
+			true,
+		);
 	});
 });

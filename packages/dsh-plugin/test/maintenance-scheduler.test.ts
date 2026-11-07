@@ -26,6 +26,11 @@ import {
 	closeDatabase,
 	openDatabaseAsync,
 } from "@magic-context/core/features/magic-context/storage-db";
+import {
+	acquireLeaseWithAcquisition,
+	releaseLease,
+} from "@magic-context/core/features/magic-context/dreamer/lease";
+import { leaseKeyFor } from "@magic-context/core/features/magic-context/dreamer/task-registry";
 import { setHarness } from "@magic-context/core/shared/harness";
 import { MaintenanceScheduler } from "../src/maintenance/scheduler.js";
 
@@ -165,6 +170,60 @@ describe("maintenance scheduler", () => {
 		expect(await scheduler.runTick()).toBe(0); // dropped, not queued
 		settle!();
 		expect(await first).toBe(1);
+	});
+
+	test("a busy domain lease defers the run; releasing it lets the next tick through", async () => {
+		rearmTask(now - 1);
+		const callsBefore = executorCalls.length;
+		executor = async (task) => {
+			executorCalls.push(task);
+			return { status: "completed" } satisfies TaskExecOutcome;
+		};
+		const leaseKey = leaseKeyFor("map-memories", identity);
+		const rival = acquireLeaseWithAcquisition(db, "other-host", leaseKey);
+		expect(rival).not.toBeNull();
+		// The tick plans the due task but cannot take the domain lease: the
+		// executor is left alone and the missed window stays armed.
+		await scheduler.runTick();
+		expect(executorCalls.length).toBe(callsBefore);
+		let state = getTaskScheduleState(db, identity, "map-memories")!;
+		expect(state.nextDueAt!).toBeLessThanOrEqual(now);
+		expect(state.lastStatus).not.toBe("completed");
+		releaseLease(db, "other-host", leaseKey);
+		expect(await scheduler.runTick()).toBe(1);
+		expect(executorCalls.length).toBe(callsBefore + 1);
+		state = getTaskScheduleState(db, identity, "map-memories")!;
+		expect(state.lastStatus).toBe("completed");
+	});
+
+	test("transient failures hot-retry up to the cap, then the slot advances", async () => {
+		rearmTask(now - 1);
+		const callsBefore = executorCalls.length;
+		executor = async (task) => {
+			executorCalls.push(task);
+			return {
+				status: "failed",
+				transient: true,
+				error: "provider rate-limited",
+			} satisfies TaskExecOutcome;
+		};
+		// MAX_TASK_RETRIES is 3: retries 1..3 keep the slot hot (next_due_at
+		// unchanged); the fourth failure exceeds the cap and advances the slot.
+		for (let attempt = 1; attempt <= 3; attempt += 1) {
+			await scheduler.runTick();
+			const state = getTaskScheduleState(db, identity, "map-memories")!;
+			expect(state.retryCount).toBe(attempt);
+			expect(state.nextDueAt!).toBeLessThanOrEqual(now); // hot retry armed
+		}
+		expect(await scheduler.runTick()).toBe(1);
+		const state = getTaskScheduleState(db, identity, "map-memories")!;
+		expect(state.retryCount).toBe(0);
+		expect(state.lastStatus).toBe("failed");
+		expect(state.lastError).toContain("rate-limited");
+		expect(state.nextDueAt!).toBeGreaterThan(now); // slot consumed
+		expect(executorCalls.length).toBe(callsBefore + 4);
+		// The advanced slot is not due: the lane goes quiet again.
+		expect(await scheduler.runTick()).toBe(0);
 	});
 
 	test("a project registered mid-run arms its quiet clock first", async () => {

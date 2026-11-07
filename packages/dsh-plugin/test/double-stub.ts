@@ -33,7 +33,10 @@ export class FakeToolHost {
 }
 
 /** Minimal execution context: identity, a live signal, no-op deferral hooks. */
-export function execContext(name: string, args: Record<string, unknown>): ToolRunContext {
+export function execContext(
+	name: string,
+	args: Record<string, unknown>,
+): ToolRunContext {
 	return {
 		callId: `test-${name}-${Math.random().toString(36).slice(2, 10)}`,
 		name,
@@ -54,7 +57,9 @@ export async function callTool(
 	if (!definition) throw new Error(`tool '${name}' is not registered`);
 	const value = await definition.execute(args, execContext(name, args));
 	if (typeof value !== "string") {
-		throw new Error(`tool '${name}' returned non-string canonical value: ${String(value)}`);
+		throw new Error(
+			`tool '${name}' returned non-string canonical value: ${String(value)}`,
+		);
 	}
 	return value;
 }

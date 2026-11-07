@@ -9,12 +9,21 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
+import {
+	type ContextDatabase,
+	closeDatabase,
+	openDatabaseAsync,
+} from "@magic-context/core/features/magic-context/storage-db";
 import { getOrCreateSessionMeta } from "@magic-context/core/features/magic-context/storage-meta-session";
-import { closeDatabase, openDatabaseAsync, type ContextDatabase } from "@magic-context/core/features/magic-context/storage-db";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { getHarness, setHarness } from "@magic-context/core/shared/harness";
-import { MagicContextConfigSchema } from "@magic-context/core/config/schema/magic-context";
-import { mountAdapter, StoreBusyError, StoreUnavailableError, type AdapterHandle } from "../src/index.js";
+import {
+	type AdapterHandle,
+	mountAdapter,
+	StoreBusyError,
+	StoreUnavailableError,
+} from "../src/index.js";
 import { TestDshHost } from "./double.js";
 
 let db: ContextDatabase;
@@ -23,7 +32,10 @@ let handle: AdapterHandle | undefined;
 
 beforeAll(async () => {
 	setHarness("dsh");
-	db = (await openDatabaseAsync({ dbPath: join(getMagicContextStorageDir(), "context.db"), nativeTurnDeadlines: true }))!;
+	db = (await openDatabaseAsync({
+		dbPath: join(getMagicContextStorageDir(), "context.db"),
+		nativeTurnDeadlines: true,
+	}))!;
 	expect(db).toBeTruthy();
 });
 
@@ -78,12 +90,25 @@ describe("mount / unmount", () => {
 		const config = MagicContextConfigSchema.parse({});
 		handle = mountAdapter(host, config, db);
 		host.addSession({ id: "s-primary" });
-		host.addSession({ id: "s-sub", origin: "subagent", parentSession: "s-primary", delegationDepth: 1 });
+		host.addSession({
+			id: "s-sub",
+			origin: "subagent",
+			parentSession: "s-primary",
+			delegationDepth: 1,
+		});
 		host.addSession({ id: "s-unknown" });
 
 		const primary = handle.mapping.upsert({ id: "s-primary" });
-		const sub = handle.mapping.upsert({ id: "s-sub", origin: "subagent", parentSession: "s-primary", delegationDepth: 1 });
-		const unknown = handle.mapping.upsert({ id: "s-unknown", origin: undefined });
+		const sub = handle.mapping.upsert({
+			id: "s-sub",
+			origin: "subagent",
+			parentSession: "s-primary",
+			delegationDepth: 1,
+		});
+		const unknown = handle.mapping.upsert({
+			id: "s-unknown",
+			origin: undefined,
+		});
 		expect(primary.role).toBe("primary");
 		expect(sub.role).toBe("subagent");
 		expect(sub.parentDshSessionId).toBe("s-primary");
@@ -93,12 +118,21 @@ describe("mount / unmount", () => {
 		expect(getHarness()).toBe("dsh");
 		expect(getOrCreateSessionMeta(db, "s-sub").isSubagent).toBe(true);
 		expect(getOrCreateSessionMeta(db, "s-primary").isSubagent).toBe(false);
-		const row = db.prepare("SELECT harness FROM session_meta WHERE session_id = ?").get("s-sub") as { harness: string };
+		const row = db
+			.prepare("SELECT harness FROM session_meta WHERE session_id = ?")
+			.get("s-sub") as { harness: string };
 		expect(row.harness).toBe("dsh");
 
 		// Idempotent: re-upsert keeps one row and the same role.
-		handle.mapping.upsert({ id: "s-sub", origin: "subagent", parentSession: "s-primary", delegationDepth: 1 });
-		const count = db.prepare("SELECT COUNT(*) AS n FROM session_meta WHERE session_id = ?").get("s-sub") as { n: number };
+		handle.mapping.upsert({
+			id: "s-sub",
+			origin: "subagent",
+			parentSession: "s-primary",
+			delegationDepth: 1,
+		});
+		const count = db
+			.prepare("SELECT COUNT(*) AS n FROM session_meta WHERE session_id = ?")
+			.get("s-sub") as { n: number };
 		expect(count.n).toBe(1);
 
 		await handle.dispose();
@@ -114,21 +148,32 @@ describe("managed edits fail-closed (T009)", () => {
 		handle.mapping.upsert({ id: "s-busy" });
 		const surfaceBefore = session.surfaceNodes();
 
-		const run = handle.managedEdits.runManagedChange("drop", "chg-busy", "s-busy", {
-			decision: async () => {
-				throw new StoreBusyError("database is locked (SQLITE_BUSY)");
+		const run = handle.managedEdits.runManagedChange(
+			"drop",
+			"chg-busy",
+			"s-busy",
+			{
+				decision: async () => {
+					throw new StoreBusyError("database is locked (SQLITE_BUSY)");
+				},
+				effect: async () => {
+					throw new Error("effect must not run after a failed decision");
+				},
 			},
-			effect: async () => {
-				throw new Error("effect must not run after a failed decision");
-			},
-		});
+		);
 		await expect(run).rejects.toBeInstanceOf(StoreUnavailableError);
 
 		const starts = session.eventsOf("mc/manage-start");
 		const ends = session.eventsOf("mc/manage-end");
 		expect(starts.length).toBe(1);
 		expect(ends.length).toBe(1);
-		expect(starts[0].data).toMatchObject({ changeId: "chg-busy", kind: "drop", mcSession: "s-busy", dshSessionId: "s-busy", ignorable: true });
+		expect(starts[0].data).toMatchObject({
+			changeId: "chg-busy",
+			kind: "drop",
+			mcSession: "s-busy",
+			dshSessionId: "s-busy",
+			ignorable: true,
+		});
 		expect(String(ends[0].data.error)).toContain("StoreBusyError");
 		expect(ends[0].data.replacementSeq).toBeUndefined();
 		// Fail-closed: the surface was never touched.
@@ -150,11 +195,17 @@ describe("managed edits fail-closed (T009)", () => {
 		const run = () =>
 			handle!.managedEdits.runManagedChange("drop", "chg-replay", "s-replay", {
 				decision: async () => {
-					if (busy) throw new StoreBusyError("database is locked (SQLITE_BUSY)");
+					if (busy)
+						throw new StoreBusyError("database is locked (SQLITE_BUSY)");
 					return { targets: [1] as const };
 				},
 				effect: async (decision) => {
-					const { replacementSeq } = await session.replaceSurface([{ type: "text", text: "replayed" }], decision.targets[0], decision.targets[0], decision.targets);
+					const { replacementSeq } = await session.replaceSurface(
+						[{ type: "text", text: "replayed" }],
+						decision.targets[0],
+						decision.targets[0],
+						decision.targets,
+					);
 					return { replacementSeq, shadowedSeqs: decision.targets };
 				},
 			});
@@ -183,9 +234,15 @@ describe("managed edits fail-closed (T009)", () => {
 		freshHost();
 		handle = mountAdapter(host, MagicContextConfigSchema.parse({}), db);
 		const before = host.liveHandleCount();
-		const off = host.onPostToolExecute(() => ({ content: [{ type: "text", text: "rewritten" }] }));
+		const off = host.onPostToolExecute(() => ({
+			content: [{ type: "text", text: "rewritten" }],
+		}));
 		expect(host.liveHandleCount()).toBe(before + 1);
-		const verdict = await host.firePostTool({ sessionId: "s-pe", toolName: "read", text: "original" });
+		const verdict = await host.firePostTool({
+			sessionId: "s-pe",
+			toolName: "read",
+			text: "original",
+		});
 		expect(verdict?.content).toEqual([{ type: "text", text: "rewritten" }]);
 		off();
 		expect(host.liveHandleCount()).toBe(before);
@@ -201,19 +258,33 @@ describe("managed edits fail-closed (T009)", () => {
 		const session = host.addSession({ id: "s-ok" }, [0, 1, 2, 3]);
 		handle.mapping.upsert({ id: "s-ok" });
 
-		const shadow = await handle.managedEdits.runManagedChange("drop", "chg-ok", "s-ok", {
-			decision: async () => ({ targets: [1, 2] as const }),
-			effect: async (decision) => {
-				const [startSeq, endSeq] = decision.targets;
-				const { replacementSeq } = await session.replaceSurface([{ type: "text", text: "folded" }], startSeq, endSeq, decision.targets);
-				return { replacementSeq, shadowedSeqs: decision.targets };
+		const shadow = await handle.managedEdits.runManagedChange(
+			"drop",
+			"chg-ok",
+			"s-ok",
+			{
+				decision: async () => ({ targets: [1, 2] as const }),
+				effect: async (decision) => {
+					const [startSeq, endSeq] = decision.targets;
+					const { replacementSeq } = await session.replaceSurface(
+						[{ type: "text", text: "folded" }],
+						startSeq,
+						endSeq,
+						decision.targets,
+					);
+					return { replacementSeq, shadowedSeqs: decision.targets };
+				},
 			},
-		});
+		);
 
 		expect(shadow.replacementSeq).toBeTypeOf("number");
 		const ends = session.eventsOf("mc/manage-end");
 		expect(ends.length).toBe(1);
-		expect(ends[0].data).toMatchObject({ changeId: "chg-ok", kind: "drop", shadowedSeqs: [1, 2] });
+		expect(ends[0].data).toMatchObject({
+			changeId: "chg-ok",
+			kind: "drop",
+			shadowedSeqs: [1, 2],
+		});
 		expect(session.surfaceNodes()).toEqual([0, 3, shadow.replacementSeq!]);
 		expect(handle.managedEdits.pendingUnapplied()).toEqual([]);
 
@@ -232,14 +303,25 @@ describe("pressure meter bridge (T012)", () => {
 		expect(handle.meter.read("s-pressure").percentage).toBeNull();
 		expect(handle.meter.lane("s-pressure")).toBe("below-execute");
 
-		host.pressureReadings.set("s-pressure", { pressureTokens: 7_000, contextWindow: 10_000 });
+		host.pressureReadings.set("s-pressure", {
+			pressureTokens: 7_000,
+			contextWindow: 10_000,
+		});
 		const bands = handle.meter.read("s-pressure");
 		// Shared config default threshold 65 ⇒ execute 65, force 85, refuse 95
 		// (core shared/escalation-bands.ts).
-		expect(bands).toMatchObject({ percentage: 70, execute: 65, force: 85, refuse: 95 });
+		expect(bands).toMatchObject({
+			percentage: 70,
+			execute: 65,
+			force: 85,
+			refuse: 95,
+		});
 		expect(handle.meter.lane("s-pressure")).toBe("execute");
 
-		host.pressureReadings.set("s-pressure", { pressureTokens: 9_600, contextWindow: 10_000 });
+		host.pressureReadings.set("s-pressure", {
+			pressureTokens: 9_600,
+			contextWindow: 10_000,
+		});
 		expect(handle.meter.lane("s-pressure")).toBe("refuse");
 
 		await handle.dispose();
@@ -262,19 +344,42 @@ describe("compaction claim (T011)", () => {
 		expect(handle.compaction.isManaged("s-claim")).toBe(true);
 
 		const engine = host.ctx.reflect.get("compaction") as {
-			compactIfNeeded: (agent: { session: { id: string } }, trigger: string, signal: AbortSignal) => Promise<unknown>;
-			compactNow: (agent: { session: { id: string } }, signal: AbortSignal) => Promise<unknown>;
+			compactIfNeeded: (
+				agent: { session: { id: string } },
+				trigger: string,
+				signal: AbortSignal,
+			) => Promise<unknown>;
+			compactNow: (
+				agent: { session: { id: string } },
+				signal: AbortSignal,
+			) => Promise<unknown>;
 		};
 		const agent = { session: { id: "s-claim" } };
-		expect(await engine.compactIfNeeded(agent, "pressure", new AbortController().signal)).toBeNull();
+		expect(
+			await engine.compactIfNeeded(
+				agent,
+				"pressure",
+				new AbortController().signal,
+			),
+		).toBeNull();
 		expect(foldCalls).toBe(0);
-		expect(await engine.compactNow(agent, new AbortController().signal)).toBeNull();
+		expect(
+			await engine.compactNow(agent, new AbortController().signal),
+		).toBeNull();
 		expect(foldCalls).toBe(1); // delegated to the MC fold callback
 
 		handle.compaction.detach("s-claim");
 		expect(handle.compaction.isManaged("s-claim")).toBe(false);
-		expect(await engine.compactIfNeeded(agent, "pressure", new AbortController().signal)).toBeNull();
-		expect(await engine.compactNow(agent, new AbortController().signal)).toBeNull();
+		expect(
+			await engine.compactIfNeeded(
+				agent,
+				"pressure",
+				new AbortController().signal,
+			),
+		).toBeNull();
+		expect(
+			await engine.compactNow(agent, new AbortController().signal),
+		).toBeNull();
 		expect(foldCalls).toBe(1); // non-managed ⇒ no-op
 
 		await handle.dispose();

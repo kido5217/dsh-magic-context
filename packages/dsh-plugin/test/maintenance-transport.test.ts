@@ -376,3 +376,243 @@ describe("maintenance orphan reaper", () => {
 		expect(reapMaintenanceOrphans(join(root, "nope"))).toEqual([]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// T064 — the production Cordis runtime: classification, restriction, gates.
+// ---------------------------------------------------------------------------
+import { createCordisMaintenanceAgentRuntime } from "../src/maintenance/transport-agent.js";
+
+function fakeCordis(opts: {
+	events?: readonly unknown[];
+	usageChunks?: readonly unknown[];
+}) {
+	const created: {
+		sessionId: string;
+		meta: Record<string, unknown>;
+		agentOptions: Record<string, unknown> | undefined;
+		handlers: Map<string, (payload: never, next: () => unknown) => unknown>;
+		restrictions: { allow?: readonly string[] }[];
+	}[] = [];
+	let idle = false;
+	const followed: unknown[] = [];
+	let flushed = 0;
+	let disposed = 0;
+	const ctx = {
+		agents: {
+			async create(o: {
+				sessionId: string;
+				meta: Record<string, unknown>;
+				agentOptions?: Record<string, unknown>;
+				setup: (agentCtx: {
+					tools: {
+						restrict: (f: { allow?: readonly string[] }) => void;
+					};
+					on: (
+						type: string,
+						handler: (payload: never, next: () => unknown) => unknown,
+					) => void;
+				}) => void;
+			}) {
+				const handlers = new Map<
+					string,
+					(payload: unknown, next: () => unknown) => unknown
+				>();
+				const restrictions: { allow?: readonly string[] }[] = [];
+				o.setup({
+					tools: { restrict: (f) => void restrictions.push(f) },
+					on: (type, handler) =>
+						void handlers.set(
+							type,
+							handler as (payload: unknown, next: () => unknown) => unknown,
+						),
+				});
+				created.push({
+					sessionId: o.sessionId,
+					meta: o.meta,
+					agentOptions: o.agentOptions,
+					handlers,
+					restrictions,
+				});
+				idle = false;
+				return {
+					agent: {
+						id: o.sessionId,
+						session: { id: o.sessionId },
+						model: { select: () => {} },
+						followup: (m: unknown) => {
+							followed.push(m);
+							queueMicrotask(() => {
+								idle = true;
+							});
+						},
+						whenIdle: () =>
+							new Promise<void>((done) => {
+								const timer = setInterval(() => {
+									if (idle) {
+										clearInterval(timer);
+										done();
+									}
+								}, 1);
+							}),
+						cancel: () => {
+							idle = true;
+						},
+					},
+					dispose: () => {
+						disposed += 1;
+					},
+				};
+			},
+		},
+		sessions: {
+			async flush() {
+				flushed += 1;
+			},
+		},
+		sessionQuery: {
+			async readSurface() {
+				return { events: opts.events ?? [] };
+			},
+		},
+	};
+	return {
+		ctx,
+		created,
+		followed,
+		flushed: () => flushed,
+		disposed: () => disposed,
+		usageSeen: [] as { input: number; output: number }[],
+		usageChunks: opts.usageChunks ?? [],
+	};
+}
+
+describe("cordis maintenance runtime", () => {
+	test("launch classifies the session as a hidden subagent child", async () => {
+		const f = fakeCordis({
+			usageChunks: [
+				{
+					type: "usage",
+					usage: {
+						inputTokens: 7,
+						outputTokens: 3,
+						totalTokens: 10,
+					},
+				},
+			],
+		});
+		const runtime = createCordisMaintenanceAgentRuntime(f.ctx as never);
+		let onStepDecision = "run" as MaintenanceStepDecision;
+		const handle = await runtime.launch({
+			sessionId: "session-mc-maint-x",
+			cwd: "/proj",
+			model: { provider: "mock", model: "mock-model" },
+			allowlist: ["read", "ctx_memory"],
+			maxOutputTokens: 900,
+			onStep: () => onStepDecision,
+			onUsage: (u) => void f.usageSeen.push(u),
+		});
+		const created = f.created[0]!;
+		expect(created.meta).toEqual({ cwd: "/proj", origin: "subagent" });
+		expect(created.agentOptions).toMatchObject({
+			provider: "mock",
+			model: "mock-model",
+			maxTokens: 900,
+		});
+		expect(created.restrictions).toEqual([{ allow: ["read", "ctx_memory"] }]);
+		// The pre-step gate refuses when the carrier says stop.
+		const preStep = created.handlers.get("agent/pre-step")! as (
+			payload: unknown,
+			next: () => unknown,
+		) => unknown;
+		expect(
+			preStep({} as never, () => "next"), //
+		).toBe("next");
+		onStepDecision = "refuse";
+		expect(await preStep({} as never, () => "next")).toEqual({
+			kind: "reject",
+		});
+		onStepDecision = "wrap-up";
+		const decision = (await preStep({} as never, () => "next")) as {
+			kind: string;
+			messages: { content: { text: string }[] }[];
+		};
+		expect(decision.kind).toBe("enter");
+		expect(decision.messages[0]!.content[0]!.text).toContain("tool-use budget");
+		// The usage tap sees provider usage chunks flow through.
+		const stream = created.handlers.get("llm/stream")! as (
+			payload: unknown,
+			next: () => unknown,
+		) => unknown;
+		const iterable = stream(
+			{ provider: "mock", model: "mock-model", messages: [] },
+			() => ({
+				[Symbol.asyncIterator]: () => {
+					const chunks = [...f.usageChunks];
+					let i = 0;
+					return {
+						next: async () =>
+							i < chunks.length
+								? { done: false as const, value: chunks[i++] }
+								: { done: true as const, value: undefined },
+					};
+				},
+			}),
+		) as AsyncIterable<unknown>;
+		for await (const _chunk of iterable) {
+			// drain
+		}
+		expect(f.usageSeen).toEqual([{ input: 7, output: 3 }]);
+		await handle.prompt("task", undefined);
+		expect(f.followed).toHaveLength(1);
+		expect(f.flushed()).toBe(1);
+		await handle.dispose();
+		expect(f.disposed()).toBe(1);
+	});
+
+	test("settlement is the last assistant message on the surface", async () => {
+		const f = fakeCordis({
+			usageChunks: [],
+			events: [
+				{
+					type: "user/message",
+					seq: 1,
+					time: 1,
+					surfaceOp: "append",
+					data: {
+						id: "u1",
+						role: "user",
+						content: [{ type: "text", text: "task" }],
+						source: { kind: "user" },
+					},
+				},
+				{
+					type: "assistant/message",
+					seq: 2,
+					time: 2,
+					surfaceOp: "append",
+					data: {
+						turn: 1,
+						step: 1,
+						message: {
+							id: "a2",
+							role: "assistant",
+							source: { kind: "model" },
+							content: [{ type: "text", text: "<manifest>final</manifest>" }],
+						},
+					},
+				},
+			],
+		});
+		const runtime = createCordisMaintenanceAgentRuntime(f.ctx as never);
+		const handle = await runtime.launch({
+			sessionId: "session-mc-maint-y",
+			cwd: "/proj",
+			model: undefined,
+			allowlist: [],
+			maxOutputTokens: undefined,
+			onStep: () => "run",
+			onUsage: () => {},
+		});
+		expect(await handle.lastAssistant()).toBe("<manifest>final</manifest>");
+	});
+});

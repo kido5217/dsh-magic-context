@@ -14,7 +14,6 @@
  */
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
-import { isDreamerRunnable } from "@magic-context/core/config/agent-disable";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
 import {
@@ -51,8 +50,14 @@ import {
 import { Channel1Tracker, decideChannel1For } from "./lanes/reduce-nudge.js";
 import {
 	type MaintenanceHandle,
+	maintenanceRunnable,
 	startMaintenance,
 } from "./maintenance/index.js";
+import {
+	createCordisSessionHistorySource,
+	createDshPrimerRawProviderFactory,
+	createDshRetrospectiveRawProvider,
+} from "./maintenance/raw-session.js";
 import { PressureLanes } from "./pressure/lanes.js";
 import { PressureMeter } from "./pressure/meter.js";
 import { Historian, type HistorianRoute } from "./sessions/historian.js";
@@ -329,7 +334,7 @@ export function mountAdapter(
 			promptSurface: config.prompt_surface,
 			modelKey: opts.modelKey,
 			smartNotesEnabled: config.smart_notes?.enabled,
-			dreamerEnabled: isDreamerRunnable(config),
+			dreamerEnabled: maintenanceRunnable(config),
 			memoryEnabled: config.memory?.enabled,
 			expandTools: config.historian?.expand_tools,
 		});
@@ -416,22 +421,33 @@ export async function apply(
 	// [T057 maintenance] the background dreamer: one adapter clock, two hidden
 	// carriers, core task logic. Gated on an explicit dreamer model block —
 	// a machine with no configured dreamer model must not churn failing runs.
-	const dreamerBlock = (loaded.config as { dreamer?: Record<string, unknown> })
-		.dreamer;
-	const maintenanceModel =
-		(dreamerBlock?.["dsh"] ?? dreamerBlock?.["pi"]) !== undefined &&
-		(dreamerBlock?.["enabled"] ?? true) !== false;
+	const maintenanceModel = maintenanceRunnable(loaded.config);
 	if (maintenanceModel) {
 		const identity = resolveProjectIdentityForSession(cwd);
 		if (identity !== undefined) {
-			const maintenance = startMaintenance({
-				ctx,
-				llmStream: (options) => cordisHost.llmStream(options),
-				db,
-				config: loaded.config,
-				projectDir: cwd,
-				projectIdentity: identity,
-			});
+			const historySource = createCordisSessionHistorySource(ctx);
+			let maintenance: MaintenanceHandle;
+			try {
+				maintenance = startMaintenance({
+					retrospectiveRawProvider: createDshRetrospectiveRawProvider(
+						historySource,
+						cwd,
+					),
+					primerRawProviderFactory:
+						createDshPrimerRawProviderFactory(historySource),
+					ctx,
+					llmStream: (options) => cordisHost.llmStream(options),
+					db,
+					config: loaded.config,
+					projectDir: cwd,
+					projectIdentity: identity,
+				});
+			} catch (error) {
+				console.error(
+					`[dsh-magic-context] maintenance mount failed: ${String(error)}`,
+				);
+				return;
+			}
 			ctx.effect(() => maintenance.stop, "dsh-magic-context-maintenance");
 			activeMaintenance = maintenance;
 		}
