@@ -5,7 +5,7 @@
 
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandDefinition } from "@deepseek-ai/dsh-commands";
 import type { MagicContextConfig } from "@magic-context/core/config/schema/magic-context";
@@ -166,5 +166,19 @@ describe("ctx command handlers", () => {
 		expect(result.text).toContain("Ran: classify-memories");
 		expect(result.text).toContain("Skipped (no work): compress-cues");
 		expect(result.text).toContain("Skipped: review-user-memories: below floor");
+	});
+});
+
+describe("ctx-status dream-state honesty (R-03)", () => {
+	test("an unresolvable project identity renders a warning, not 'never'", async () => {
+		// The home directory is the resolver's deterministic refusal (no
+		// allow_home_project): identity is UNDEFINED, the value that slipped
+		// through the old `=== null` guard and rendered "not yet run".
+		mount({ projectDir: homedir(), maintenance: () => ({}) as never });
+		const result = await invoke("ctx-status");
+		expect(result.kind).toBe("success");
+		expect(result.text).toContain("dream schedule state unreadable");
+		expect(result.text).toContain("no project identity");
+		mount();
 	});
 });
