@@ -410,8 +410,9 @@ describe("loadDshConfig project-tier trust (N-01)", () => {
 		const loaded = loadDshConfig({ cwd: projectDir });
 		// Escalation fields stripped: the autonomous dreamer keeps the USER's
 		// instructions and tool posture, not the repo's.
-		expect(loaded.config.dreamer?.pi?.prompt).toBeUndefined();
-		expect(loaded.config.dreamer?.pi?.tools).toBeUndefined();
+		const pi = loaded.config.dreamer?.pi as Record<string, unknown> | undefined;
+		expect(pi?.prompt).toBeUndefined();
+		expect(pi?.tools).toBeUndefined();
 		// User-only scalars never arrive from a repo.
 		expect(loaded.config.language).not.toBe("fr");
 		// Raise-only thresholds: the default 65 may not be lowered by a repo.

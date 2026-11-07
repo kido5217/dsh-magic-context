@@ -269,6 +269,11 @@ export function mountAdapter(
 
 	// T012 — pressure meter bridge.
 	const meter = new PressureMeter(host, config);
+	// N-02: every band computation (meter.read → meter.lane → all consumers)
+	// prices against min(advertised, learned). One overlay point, no drift.
+	meter.setWindowOverlay((sessionId, advertised) =>
+		overflowLedger.effectiveWindow(sessionId, advertised),
+	);
 	registerEffect("pressure-meter", () => () => undefined);
 
 	// [T015 pass] transform-pass bridge (US1): durable-log projection, queued
@@ -319,6 +324,7 @@ export function mountAdapter(
 		config,
 		mapping,
 		overflowWindows: overflowLedger,
+		overflowGate,
 		claim: compaction,
 		meter,
 		head,

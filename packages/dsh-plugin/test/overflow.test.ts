@@ -67,6 +67,42 @@ describe("overflow recovery", () => {
 		expect(folds).toBe(1);
 	});
 
+	test("a fold that folds nothing releases the claim for a later overflow (N-02)", async () => {
+		const ledger = new OverflowLedger();
+		const gate = new OverflowRecoveryGate();
+		let folds = 0;
+		const attempt = (outcome: unknown) =>
+			recoverOverflow({
+				sessionId: "s-noop",
+				detection: detectOverflowError(OVERFLOW_ERROR),
+				ledger,
+				gate,
+				fold: async () => {
+					folds += 1;
+					return outcome;
+				},
+			});
+		// A fold that returns null folded nothing → release, don't latch.
+		expect(await attempt(null)).toBe(false);
+		expect(folds).toBe(1);
+		// The next overflow gets a fresh attempt because the claim was released.
+		expect(await attempt({ folded: true })).toBe(true);
+		expect(folds).toBe(2);
+		// A real fold latches the claim: the next overflow cannot re-fold.
+		expect(await attempt({ folded: true })).toBe(false);
+		expect(folds).toBe(2);
+	});
+
+	test("a pre-step pass releases a completed recovery for the next episode (N-02)", () => {
+		// The gate release path in runPass: reset(sessionId) clears the one-shot
+		// claim so a later overflow is a new episode, matching the core.
+		const gate = new OverflowRecoveryGate();
+		expect(gate.claim("s-episode")).toBe(true);
+		expect(gate.claim("s-episode")).toBe(false);
+		gate.reset("s-episode");
+		expect(gate.claim("s-episode")).toBe(true);
+	});
+
 	test("a failed fold does not authorize a retry", async () => {
 		const ledger = new OverflowLedger();
 		const gate = new OverflowRecoveryGate();
@@ -80,5 +116,39 @@ describe("overflow recovery", () => {
 			},
 		});
 		expect(recovered).toBe(false);
+	});
+});
+
+// ─── N-02: the learned window prices the BAND, not just the budgets ───
+
+import { PressureMeter } from "../src/pressure/meter.js";
+
+describe("pressure band with learned window (N-02)", () => {
+	const host = {
+		// Advertises 200k but the route really serves ~128k.
+		pressure: (_sessionId: string) => ({
+			pressureTokens: 110_000,
+			contextWindow: 200_000,
+		}),
+	} as never;
+	const config = { execute_threshold_percentage: 65 };
+
+	test("advertised-only pricing sits below execute; learned pricing forces", () => {
+		const meter = new PressureMeter(host, config);
+		// 110k/200k = 55% → below the 65% execute threshold.
+		expect(meter.lane("s-band")).toBe("below-execute");
+		// Ledger says the route actually rejects at ~128k: the SAME pass must
+		// now see 110k/128k ≈ 86% → inside the execute/force band, so folds
+		// trigger BEFORE the provider wall, matching the T028 comment.
+		const ledger = new OverflowLedger();
+		ledger.record(
+			"s-band",
+			detectOverflowError(OVERFLOW_ERROR),
+			200_000,
+		);
+		meter.setWindowOverlay((id, advertised) =>
+			ledger.effectiveWindow(id, advertised),
+		);
+		expect(meter.lane("s-band")).toBe("force");
 	});
 });

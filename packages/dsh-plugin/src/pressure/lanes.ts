@@ -108,6 +108,13 @@ export interface PressureLanesDeps {
 	/** Workspace directory backing project identity (auto-search). */
 	readonly projectDir: string;
 	/** Learned route windows from overflow recovery (T028); optional in tests. */
+	/** Learned-overflow recovery gate (N-02): a pass runs only after the
+	 *  previous provider request completed, which proves any recovery fold
+	 *  served successfully — release the one-shot claim so the next overflow
+	 *  is a new episode, not a dead session. */
+	readonly overflowGate?: {
+		reset(sessionId: string): void;
+	};
 	readonly overflowWindows?: {
 		effectiveWindow(
 			sessionId: string,
@@ -279,6 +286,10 @@ export class PressureLanes {
 		// point). The managed pass stays out of the way; the next step runs
 		// it as usual.
 		if (this.deps.claim.foldInFlight(session.id)) return "enter";
+		// Reaching a pre-step means the previous request completed (N-02):
+		// any recovery fold that served is done; the claim releases and the
+		// next overflow gets its own one-shot retry.
+		this.deps.overflowGate?.reset(session.id);
 		const lane = this.deps.meter.lane(session.id); // fresh EVERY pass
 		const measured = this.deps.host.pressure(session.id);
 		// A route that already rejected one request is priced against what it
