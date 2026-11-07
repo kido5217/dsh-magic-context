@@ -140,6 +140,61 @@ describe("managed edits fail-closed (T009)", () => {
 		handle = undefined;
 	});
 
+	test("store-busy replays once: the same decision lands after the lock clears (T020)", async () => {
+		freshHost();
+		handle = mountAdapter(host, MagicContextConfigSchema.parse({}), db);
+		const session = host.addSession({ id: "s-replay" }, [0, 1, 2]);
+		handle.mapping.upsert({ id: "s-replay" });
+		const surfaceBefore = session.surfaceNodes();
+		let busy = true;
+		const run = () =>
+			handle!.managedEdits.runManagedChange("drop", "chg-replay", "s-replay", {
+				decision: async () => {
+					if (busy) throw new StoreBusyError("database is locked (SQLITE_BUSY)");
+					return { targets: [1] as const };
+				},
+				effect: async (decision) => {
+					const { replacementSeq } = await session.replaceSurface([{ type: "text", text: "replayed" }], decision.targets[0], decision.targets[0], decision.targets);
+					return { replacementSeq, shadowedSeqs: decision.targets };
+				},
+			});
+
+		await expect(run()).rejects.toBeInstanceOf(StoreUnavailableError);
+		expect(session.surfaceNodes()).toEqual(surfaceBefore);
+		expect(handle.managedEdits.pendingUnapplied()).toEqual([]);
+
+		// Lock cleared: the identical decision lands exactly once.
+		busy = false;
+		const shadow = await run();
+		expect(shadow.shadowedSeqs).toEqual([1]);
+		expect(session.surfaceNodes()).toEqual([0, 2, shadow.replacementSeq!]);
+		// Two brackets, both closed: one error, one success.
+		expect(session.eventsOf("mc/manage-start")).toHaveLength(2);
+		const ends = session.eventsOf("mc/manage-end");
+		expect(ends).toHaveLength(2);
+		expect(ends[0]!.data.error).toBeDefined();
+		expect(ends[1]!.data.error).toBeUndefined();
+
+		await handle.dispose();
+		handle = undefined;
+	});
+
+	test("the post-execute listener is a fiber-scoped handle (T008/T020)", async () => {
+		freshHost();
+		handle = mountAdapter(host, MagicContextConfigSchema.parse({}), db);
+		const before = host.liveHandleCount();
+		const off = host.onPostToolExecute(() => ({ content: [{ type: "text", text: "rewritten" }] }));
+		expect(host.liveHandleCount()).toBe(before + 1);
+		const verdict = await host.firePostTool({ sessionId: "s-pe", toolName: "read", text: "original" });
+		expect(verdict?.content).toEqual([{ type: "text", text: "rewritten" }]);
+		off();
+		expect(host.liveHandleCount()).toBe(before);
+
+		await handle.dispose();
+		handle = undefined;
+		expect(host.liveHandleCount()).toBe(0);
+	});
+
 	test("success path: decision then effect then end-with-shadow", async () => {
 		freshHost();
 		handle = mountAdapter(host, MagicContextConfigSchema.parse({}), db);

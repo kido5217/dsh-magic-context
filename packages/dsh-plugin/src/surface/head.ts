@@ -196,7 +196,7 @@ export class HeadManager {
 						.replaceSurface(content, cached.seq, cached.seq, [cached.seq])
 						.then(({ replacementSeq }) => ({ replacementSeq, shadowedSeqs: [cached.seq] }));
 				}
-				return session.appendNotice(content).then(({ seq }) => ({ replacementSeq: seq }));
+				return session.appendTail(content).then(({ seq }) => ({ replacementSeq: seq }));
 			},
 		});
 		if (shadow.replacementSeq !== undefined) {

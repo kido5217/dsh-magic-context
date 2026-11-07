@@ -167,4 +167,62 @@ describe("crash window: decision written, effect never landed (V7a)", () => {
 		).rejects.toThrow(/not a current surface node/);
 		expect(session.surfaceNodes()).toEqual(after);
 	});
+
+	test("a per-node replay converges: each queued drop lands on its own node, once (T017/T020)", async () => {
+		host = new McHost();
+		const crashId = `${SESSION}-per-node`;
+		session = host.addSession({ id: crashId }, [0, 1, 2, 3]);
+		const edits = new ManagedEdits(host);
+		const text = new TextEncoder().encode("dropped item");
+		insertTag(db, crashId, "msg-a", "message", text.length, 11);
+		insertTag(db, crashId, "msg-b", "message", text.length, 12);
+		queuePendingOp(db, crashId, 11, "drop");
+		queuePendingOp(db, crashId, 12, "drop");
+
+		// The crash left the bracket open; the surface is untouched.
+		await session.appendLogEvent("mc/manage-start", {
+			changeId: "mc-drop-per-node",
+			kind: "drop",
+			mcSession: crashId,
+			dshSessionId: crashId,
+			ignorable: true,
+		});
+		await session.flush();
+		expect(session.surfaceNodes()).toEqual([0, 1, 2, 3]);
+
+		const replay = () =>
+			edits.runManagedChange("drop", "mc-drop-per-node", crashId, {
+				decision: async () => {
+					const ops = getPendingOps(db, crashId);
+					return { targets: ops.map((op) => op.tagId).sort((a, b) => a - b) };
+				},
+				effect: async (decision: { targets: number[] }) => {
+					for (const tagId of decision.targets) {
+						const seq = Number(String(tagId).slice(-1)); // tag 11 ⇒ node 1, 12 ⇒ node 2
+						await session.rewriteToolResult(seq, [{ type: "text", text: `[dropped §${tagId}§]` }]);
+						removePendingOp(db, crashId, tagId);
+					}
+					return { shadowedSeqs: decision.targets.map((tagId) => Number(String(tagId).slice(-1))) };
+				},
+			});
+
+		await replay();
+		expect(session.eventsOf("mc/manage-end")).toHaveLength(1);
+		expect(getPendingOps(db, crashId)).toEqual([]);
+		// One edit per target, never a span: the two rewritten nodes are
+		// replaced one-for-one, so the surface keeps its size and the untouched
+		// nodes 0 and 3 survive.
+		const after = session.surfaceNodes();
+		expect(after).toHaveLength(4);
+		expect(after).toContain(0);
+		expect(after).toContain(3);
+		expect(after).not.toContain(1);
+		expect(after).not.toContain(2);
+		// A second replay cannot double-apply: the queue is empty and the
+		// shadowed nodes are still current, so the planner has nothing to do.
+		const before = session.eventsOf("mc/manage-end").length;
+		expect(openBrackets(session)).toHaveLength(0);
+		expect(getPendingOps(db, crashId)).toEqual([]);
+		expect(session.eventsOf("mc/manage-end").length).toBe(before);
+	});
 });

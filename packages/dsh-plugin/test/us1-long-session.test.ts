@@ -51,12 +51,15 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		queuePendingOp(db, "s-drop", tag, "drop");
 
 		expect(await host.firePreStep(stepFor("s-drop"))).toBe("enter");
-		expect(session.replacements).toHaveLength(1);
-		const edit = session.replacements[0]!;
-		expect(edit.shadowedSeqs).toEqual([1]);
-		expect(session.surfaceNodes()).not.toContain(1);
+		// T017: one per-node edit, never a span. m1 is an assistant body, so the
+		// projection lane rewrites it in place: the node survives, its content is
+		// the canonical placeholder.
+		expect(session.replacements).toHaveLength(0);
+		expect(session.rewrittenAssistantBodies).toHaveLength(1);
+		expect(session.rewrittenAssistantBodies[0]!.seq).toBe(1);
+		expect(session.surfaceNodes()).toContain(1);
 		expect(session.surfaceNodes()).toContain(5);
-		const text = session.logRecords().find((record) => record.seq === edit.replacementSeq)!.text;
+		const text = session.logRecords().find((record) => record.seq === 1)!.text;
 		expect(text.startsWith(renderDroppedText(tag, buildReplacementContent(tag)))).toBe(true);
 
 		// Bracket discipline: every start has its end, with the shadow info.
@@ -64,7 +67,6 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		const end = session.eventsOf("mc/manage-end").find((entry) => entry.data.kind === "drop")!;
 		expect(end.data.kind).toBe("drop");
 		expect(end.data.shadowedSeqs).toEqual([1]);
-		expect(end.data.replacementSeq).toBe(edit.replacementSeq);
 	});
 
 	test("execute band auto-queues unprotected history and creates the head", async () => {
@@ -73,11 +75,15 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 		expect(await host.firePreStep(stepFor("s-auto"))).toBe("enter");
 
 		// Protected tail (window 10_000 × 15% budget = 1500 tokens; each
-		// message ≈ 1000 ⇒ only the newest fits verbatim): the drop cluster
-		// covers seqs 0..6 only.
-		expect(session.replacements).toHaveLength(1);
-		expect(session.replacements[0]!.shadowedSeqs).toEqual([0, 1, 2, 3, 4, 5, 6]);
-		for (const seq of [7]) expect(session.surfaceNodes()).toContain(seq);
+		// message ≈ 1000 ⇒ only the newest fits verbatim): seqs 0..6 are
+		// reclaimable, and each is edited on its own node.
+		const rewritten = [...session.rewrittenUserMessages.map((edit) => edit.seq), ...session.rewrittenAssistantBodies.map((edit) => edit.seq)].sort((a, b) => a - b);
+		expect(rewritten).toEqual([0, 1, 2, 3, 4, 5, 6]);
+		// User nodes are replaced one-for-one (a new user node each); assistant
+		// nodes are edited in place. No span replacement swallows the gap.
+		expect(session.replacements.map((edit) => edit.shadowedSeqs)).toEqual([[0], [2], [4], [6]]);
+		expect(session.rewrittenAssistantBodies.map((edit) => edit.seq)).toEqual([1, 3, 5]);
+		for (const seq of [1, 3, 5, 7]) expect(session.surfaceNodes()).toContain(seq);
 
 		// The head node exists after a managed change landed: guidance text,
 		// appended as its own surface node.
@@ -105,9 +111,9 @@ describe("US1 pass: drops, protected tail, head, fold", () => {
 
 		const kinds = session.eventsOf("mc/manage-start").slice(startsBefore).map((entry) => entry.data.kind);
 		expect(kinds).toContain("drop"); // (+ a head node if none existed yet)
-		const edit = session.replacements.at(-1)!;
-		expect(edit.shadowedSeqs).toEqual([7]);
-		const text = session.logRecords().find((record) => record.seq === edit.replacementSeq)!.text;
+		const edit = session.rewrittenAssistantBodies.at(-1)!;
+		expect(edit.seq).toBe(7);
+		const text = session.logRecords().find((record) => record.seq === 7)!.text;
 		// Byte-stability: the placeholder is the pure core renderer's output,
 		// not a re-derivation that can drift between passes.
 		expect(text.startsWith(buildReplacementContent(tag))).toBe(true);

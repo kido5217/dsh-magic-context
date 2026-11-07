@@ -12,7 +12,17 @@
 import { Context } from "@deepseek-ai/cordis";
 import type { FinishReason, GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm/types";
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
-import type { DshHost, DshSession, DshSessionHeaderFacts, PressureReading, PreStepDecision, PreStepInfo } from "../src/host.js";
+import type {
+	DshHost,
+	DshSession,
+	DshSessionHeaderFacts,
+	CompactionLifecycleEvent,
+	PostToolInfo,
+	PostToolVerdict,
+	PressureReading,
+	PreStepDecision,
+	PreStepInfo,
+} from "../src/host.js";
 import type { McReplacementContent } from "../src/surface/events.js";
 import type { DshLogMessageRecord } from "../src/surface/dsh-session-log.js";
 
@@ -46,8 +56,16 @@ export class FakeSession implements DshSession {
 	flushCount = 0;
 	/** Surface replacements applied via replaceSurface, in apply order. */
 	readonly replacements: FakeSurfaceEdit[] = [];
-	/** Notices appended via appendNotice, in apply order. */
+	/** Tail appends (notices, head) in apply order. */
 	readonly notices: Array<{ seq: number; content: McReplacementContent }> = [];
+	/** Tool-result rewrites applied, in order (T017). */
+	readonly rewrittenToolResults: Array<{ seq: number; replacementSeq: number; content: McReplacementContent }> = [];
+	/** Assistant-body rewrites applied, in order (T004/T017). */
+	readonly rewrittenAssistantBodies: Array<{ seq: number; content: McReplacementContent }> = [];
+	/** User-node rewrites applied, in order (T017). */
+	readonly rewrittenUserMessages: Array<{ seq: number; replacementSeq: number; content: McReplacementContent }> = [];
+	/** Compaction lifecycle events appended, in order (T072). */
+	readonly compactionEvents: Array<{ phase: string; data: Record<string, unknown>; seq: number }> = [];
 
 	constructor(
 		readonly header: DshSessionHeaderFacts,
@@ -110,7 +128,44 @@ export class FakeSession implements DshSession {
 		return { replacementSeq };
 	}
 
-	async appendNotice(content: McReplacementContent): Promise<{ seq: number }> {
+	/** Content-only rewrite of one current tool/result node (host contract). */
+	async rewriteToolResult(seq: number, content: McReplacementContent): Promise<{ replacementSeq: number }> {
+		const record = this.records.get(seq);
+		if (record === undefined || record.role !== "tool") throw new Error(`tool-result rewrite refused: seq ${seq} is not a tool result`);
+		if (!this.surface.includes(seq)) throw new Error(`tool-result rewrite refused: seq ${seq} is not a current surface node`);
+		const replacementSeq = this.nextSeq++;
+		this.surface = this.surface.map((node) => (node === seq ? replacementSeq : node));
+		this.records.set(replacementSeq, { ...record, seq: replacementSeq, text: fakeContentText(content) });
+		this.replacements.push({ replacementSeq, startSeq: seq, endSeq: seq, shadowedSeqs: [seq], content });
+		this.rewrittenToolResults.push({ seq, replacementSeq, content });
+		return { replacementSeq };
+	}
+
+	/** Whole-node replacement of one current user/message node. */
+	async rewriteUserMessage(seq: number, content: McReplacementContent): Promise<{ replacementSeq: number }> {
+		const record = this.records.get(seq);
+		if (record === undefined || record.role !== "user") throw new Error(`user rewrite refused: seq ${seq} is not a user message`);
+		if (!this.surface.includes(seq)) throw new Error(`user rewrite refused: seq ${seq} is not a current surface node`);
+		const replacementSeq = this.nextSeq++;
+		this.surface = this.surface.map((node) => (node === seq ? replacementSeq : node));
+		this.records.set(replacementSeq, { seq: replacementSeq, messageId: `mc-edit-${String(replacementSeq)}`, role: "user", text: fakeContentText(content), createdAt: replacementSeq, blocks: content });
+		this.replacements.push({ replacementSeq, startSeq: seq, endSeq: seq, shadowedSeqs: [seq], content });
+		this.rewrittenUserMessages.push({ seq, replacementSeq, content });
+		return { replacementSeq };
+	}
+
+	/** Assistant-body rewrite: the double applies the projection immediately. */
+	async rewriteAssistantBody(seq: number, content: McReplacementContent): Promise<{ eventSeq: number }> {
+		const record = this.records.get(seq);
+		if (record === undefined || record.role !== "assistant") throw new Error(`assistant rewrite refused: seq ${seq} is not an assistant message`);
+		if (!this.surface.includes(seq)) throw new Error(`assistant rewrite refused: seq ${seq} is not a current surface node`);
+		this.records.set(seq, { ...record, text: fakeContentText(content), blocks: content });
+		this.rewrittenAssistantBodies.push({ seq, content });
+		const eventSeq = this.nextSeq++;
+		return { eventSeq };
+	}
+
+	async appendTail(content: McReplacementContent): Promise<{ seq: number }> {
 		const seq = this.nextSeq++;
 		this.surface.push(seq);
 		this.records.set(seq, { seq, messageId: `mc-notice-${String(seq)}`, role: "user", text: fakeContentText(content), createdAt: seq });
@@ -121,6 +176,12 @@ export class FakeSession implements DshSession {
 	async appendLogEvent(type: "mc/manage-start" | "mc/manage-end", data: Record<string, unknown>): Promise<{ seq: number }> {
 		const seq = this.nextSeq++;
 		this.logEntries.push({ type, data, seq });
+		return { seq };
+	}
+
+	async appendCompactionEvent(event: CompactionLifecycleEvent): Promise<{ seq: number }> {
+		const seq = this.nextSeq++;
+		this.compactionEvents.push({ phase: event.phase, data: event.data as unknown as Record<string, unknown>, seq });
 		return { seq };
 	}
 
@@ -193,9 +254,31 @@ export class TestDshHost implements DshHost {
 		};
 	}
 
-	/** Live host handles (pre-step listeners + tool registrations). */
+	readonly postToolListeners = new Set<(info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>>();
+
+	registerRewriteProjection(): () => void {
+		return () => {};
+	}
+
+	onPostToolExecute(listener: (info: PostToolInfo) => PostToolVerdict | undefined | Promise<PostToolVerdict | undefined>): () => void {
+		this.postToolListeners.add(listener);
+		return () => {
+			this.postToolListeners.delete(listener);
+		};
+	}
+
+	/** Fire the post-execute waterfall; the last non-undefined verdict wins. */
+	async firePostTool(info: PostToolInfo): Promise<PostToolVerdict | undefined> {
+		let verdict: PostToolVerdict | undefined;
+		for (const listener of this.postToolListeners) {
+			verdict = (await listener(info)) ?? verdict;
+		}
+		return verdict;
+	}
+
+	/** Live host handles (pre-step + post-execute listeners + tool registrations). */
 	liveHandleCount(): number {
-		return this.preStepListeners.size + this.toolRegistrations;
+		return this.preStepListeners.size + this.postToolListeners.size + this.toolRegistrations;
 	}
 
 	/** Fire the pre-step waterfall the way the host would; last decision wins. */

@@ -14,11 +14,14 @@
  * - `MC_DSH_TEST_ROOT` overrides the root (defaults to `<repo>/tmp/dsh-live-<pid>-<n>`).
  * - `MC_DSH_BIN` overrides the binary (defaults to `dsh` on PATH).
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -80,6 +83,19 @@ export interface LiveHome {
 			env?: Record<string, string>;
 		},
 	): LiveTurnResult;
+	/**
+	 * Same turn, awaited instead of blocking. Required whenever the test hosts
+	 * an in-process mock provider: `spawnSync` blocks the event loop, so the
+	 * server could never answer its own child.
+	 */
+	runHeadlessAsync(
+		prompt: string,
+		options?: {
+			sessionId?: string;
+			args?: readonly string[];
+			env?: Record<string, string>;
+		},
+	): Promise<LiveTurnResult>;
 	dispose(): void;
 }
 
@@ -87,11 +103,85 @@ function dshEnv(
 	home: string,
 	extra: Record<string, string> = {},
 ): Record<string, string> {
-	return { ...process.env, DSH_HOME: home, ...extra } as Record<string, string>;
+	return {
+		...process.env,
+		DSH_HOME: home,
+		// The shared MC store follows XDG_DATA_HOME. Pointing it inside the
+		// throwaway home keeps every live gate off the developer's real store
+		// (and inside the workspace sandbox).
+		XDG_DATA_HOME: join(home, "data"),
+		...extra,
+	} as Record<string, string>;
+}
+
+/** Newest mtime under a source tree. */
+function newestMtime(directory: string): number {
+	let newest = 0;
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "tmp") continue;
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) newest = Math.max(newest, newestMtime(path));
+		else if (entry.name.endsWith(".ts") || entry.name.endsWith(".json") || entry.name.endsWith(".yml")) {
+			newest = Math.max(newest, statSync(path).mtimeMs);
+		}
+	}
+	return newest;
+}
+
+/**
+ * Rebuild `dist/` when the sources are newer. The profile symlinks this
+ * package and DSH loads `main` (`dist/index.js`), so a live gate that skipped
+ * this would validate stale code — the worst possible evidence. Builds are
+ * sub-second, so the freshness check is unconditional rather than opt-in.
+ */
+function ensureFreshBuild(): void {
+	const distEntry = join(PACKAGE_DIR, "dist", "index.js");
+	const source = newestMtime(join(PACKAGE_DIR, "src"));
+	if (existsSync(distEntry) && statSync(distEntry).mtimeMs >= source) return;
+	const build = spawnSync(
+		"bun",
+		[
+			"build",
+			"src/index.ts",
+			"--outdir",
+			"dist",
+			"--entry-naming",
+			"[name].[ext]",
+			"--target",
+			"node",
+			"--format",
+			"esm",
+			"--external",
+			"@deepseek-ai/cordis",
+			"--external",
+			"@deepseek-ai/dsh-session",
+			"--external",
+			"@deepseek-ai/dsh-agent",
+			"--external",
+			"@deepseek-ai/dsh-llm",
+			"--external",
+			"@deepseek-ai/dsh-tools",
+			"--external",
+			"@deepseek-ai/dsh-compaction",
+			"--external",
+			"@deepseek-ai/dsh-token-meter",
+			"--external",
+			"@deepseek-ai/dsh-session-query",
+			"--external",
+			"@deepseek-ai/dsh-attachment",
+			"--external",
+			"@deepseek-ai/dsh-commands",
+			"--external",
+			"node:sqlite",
+		],
+		{ cwd: PACKAGE_DIR, encoding: "utf8", timeout: 120_000 },
+	);
+	if (build.status !== 0) throw new Error(`dsh-magic-context build failed: ${build.stderr || build.stdout}`);
 }
 
 /** Seed a throwaway `headless` profile that loads this package as a bundle. */
 export function createLiveHome(options: LiveHomeOptions = {}): LiveHome {
+	ensureFreshBuild();
 	const profile = options.profile ?? "e2e";
 	const rootParent = process.env.MC_DSH_TEST_ROOT ?? join(REPO_ROOT, "tmp");
 	mkdirSync(rootParent, { recursive: true });
@@ -217,32 +307,41 @@ export function createLiveHome(options: LiveHomeOptions = {}): LiveHome {
 			return result.stdout;
 		},
 		runHeadless(prompt, runOptions = {}) {
-			const args = ["--profile", profile, "--json", ...(runOptions.args ?? [])];
-			if (runOptions.sessionId) args.push("--session-id", runOptions.sessionId);
-			args.push(prompt);
-			const result = spawnSync(DSH_BIN, args, {
+			const result = spawnSync(DSH_BIN, turnArgs(profile, prompt, runOptions), {
 				env: dshEnv(home, runOptions.env),
 				encoding: "utf8",
 				timeout: Number(process.env.MC_DSH_TURN_TIMEOUT_MS ?? 300_000),
 			});
-			const events = (result.stdout ?? "")
-				.split("\n")
-				.map((line) => line.trim())
-				.filter((line) => line.startsWith("{"))
-				.flatMap((line) => {
-					try {
-						return [JSON.parse(line) as Record<string, unknown>];
-					} catch {
-						return [];
-					}
+			return toTurnResult(result.stdout, result.stderr, result.status, result.signal);
+		},
+		async runHeadlessAsync(prompt, runOptions = {}) {
+			const child = spawn(DSH_BIN, turnArgs(profile, prompt, runOptions), {
+				env: dshEnv(home, runOptions.env),
+			});
+			let stdout = "";
+			let stderr = "";
+			child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+				stdout += chunk;
+			});
+			child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+				stderr += chunk;
+			});
+			const timeoutMs = Number(process.env.MC_DSH_TURN_TIMEOUT_MS ?? 300_000);
+			const outcome = await new Promise<{
+				code: number | null;
+				signal: NodeJS.Signals | null;
+			}>((resolve) => {
+				const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+				child.on("error", () => {
+					clearTimeout(timer);
+					resolve({ code: null, signal: null });
 				});
-			return {
-				status: result.status,
-				signal: result.signal,
-				events,
-				stdout: result.stdout ?? "",
-				stderr: result.stderr ?? "",
-			};
+				child.on("close", (code, signal) => {
+					clearTimeout(timer);
+					resolve({ code, signal });
+				});
+			});
+			return toTurnResult(stdout, stderr, outcome.code, outcome.signal);
 		},
 		dispose() {
 			rmSync(root, { recursive: true, force: true });
@@ -260,4 +359,43 @@ export function sessionIdsFrom(result: LiveTurnResult): string[] {
 		if (typeof sessionId === "string") ids.add(sessionId);
 	}
 	return [...ids];
+}
+
+interface TurnOptions {
+	readonly sessionId?: string;
+	readonly args?: readonly string[];
+	readonly env?: Record<string, string>;
+}
+
+function turnArgs(profile: string, prompt: string, options: TurnOptions): string[] {
+	const args = ["--profile", profile, "--json", ...(options.args ?? [])];
+	if (options.sessionId) args.push("--session-id", options.sessionId);
+	args.push(prompt);
+	return args;
+}
+
+function toTurnResult(
+	stdout: string | null | undefined,
+	stderr: string | null | undefined,
+	status: number | null,
+	signal: NodeJS.Signals | null,
+): LiveTurnResult {
+	const events = (stdout ?? "")
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.startsWith("{"))
+		.flatMap((line) => {
+			try {
+				return [JSON.parse(line) as Record<string, unknown>];
+			} catch {
+				return [];
+			}
+		});
+	return {
+		status,
+		signal,
+		events,
+		stdout: stdout ?? "",
+		stderr: stderr ?? "",
+	};
 }

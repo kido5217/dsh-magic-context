@@ -184,7 +184,7 @@ export class PressureLanes {
 				// Empty surface ⇒ the host's first system/message is not logged yet
 				// (first step of a fresh session); a notice now would precede the
 				// protected first surface head and corrupt the log on reopen.
-				if (session.surfaceNodes().length > 0) await session.appendNotice([{ type: "text", text }]);
+				if (session.surfaceNodes().length > 0) await session.appendTail([{ type: "text", text }]);
 			} catch (error) {
 				log(`[dsh-magic-context] refusal notice could not be appended for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
 			}
