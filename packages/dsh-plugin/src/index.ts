@@ -432,6 +432,11 @@ export async function apply(
 		register: (definition) => ctx.commands.register(definition),
 	});
 	ctx.effect(() => disposeCommands, "dsh-magic-context-commands");
+	// V6 registration proof: interactive surfaces list these; headless proves
+	// the mount reached the command registry (dispatch is surface-side).
+	process.stderr.write(
+		"[dsh-magic-context] commands registered: ctx-status, ctx-flush, ctx-embed, ctx-recomp, ctx-wrapup, ctx-dream\n",
+	);
 	// [T057 maintenance] the background dreamer: one adapter clock, two hidden
 	// carriers, core task logic. Gated on an explicit dreamer model block —
 	// a machine with no configured dreamer model must not churn failing runs.
