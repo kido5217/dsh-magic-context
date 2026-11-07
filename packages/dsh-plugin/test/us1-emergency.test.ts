@@ -68,6 +68,7 @@ function context(overrides: Partial<LaneContext> = {}): LaneContext {
 		db,
 		protectedMessageIds: new Set(),
 		pressure: { pressureTokens: 9_500, contextWindow: 10_000, percentage: 95 },
+		projectDir: process.cwd(),
 		...overrides,
 	};
 }
@@ -136,6 +137,7 @@ describe("emergency drop", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 				pressure: {
 					pressureTokens: 9_500,
 					contextWindow: 10_000,
@@ -259,6 +261,7 @@ describe("caveman compression", () => {
 				config: enabled,
 				db,
 				protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 				lanes: [cavemanLane],
 				gates: new LaneGates(),
 			});
@@ -309,6 +312,7 @@ describe("note nudge lane", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 				lanes: [noteNudgeLane],
 				gates: new LaneGates(),
 			});
@@ -372,6 +376,7 @@ describe("ctx_reduce channel-2 nudge", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 				lanes: [reduceNudgeLane],
 				gates: new LaneGates(),
 			});
@@ -478,6 +483,7 @@ describe("synthetic todo lane", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 				todo: host.todoState("s-todo"),
 				lanes: [todoLane],
 				gates: new LaneGates(),
@@ -495,6 +501,7 @@ describe("synthetic todo lane", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set<string>(),
+			projectDir: process.cwd(),
 			todo: { seq: 5, items: [{ content: "ship it", status: "in_progress" }] },
 		};
 		expect(selectTodo(context, delivery)).toBeDefined();

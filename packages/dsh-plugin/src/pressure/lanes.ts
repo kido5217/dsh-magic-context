@@ -44,6 +44,7 @@ import type {
 	PreStepDecision,
 	PreStepInfo,
 } from "../host.js";
+import { autoSearchLane } from "../lanes/auto-search.js";
 import { cavemanLane } from "../lanes/caveman.js";
 import { emergencyDropLane } from "../lanes/emergency.js";
 import { runLanePass } from "../lanes/engine.js";
@@ -96,6 +97,8 @@ export interface PressureLanesDeps {
 	readonly historian: Historian;
 	readonly dropApplier: DropApplier;
 	readonly managedEdits: ManagedEdits;
+	/** Workspace directory backing project identity (auto-search). */
+	readonly projectDir: string;
 	/** Learned route windows from overflow recovery (T028); optional in tests. */
 	readonly overflowWindows?: {
 		effectiveWindow(
@@ -290,6 +293,7 @@ export class PressureLanes {
 						budget,
 						true,
 					),
+					projectDir: this.deps.projectDir,
 					lanes: [emergencyDropLane, supersessionLane],
 					gates: this.gates,
 				});
@@ -372,7 +376,9 @@ export class PressureLanes {
 					return percentage !== null ? { percentage } : {};
 				})(),
 			},
+			projectDir: this.deps.projectDir,
 			lanes: [
+				autoSearchLane,
 				dedupLane,
 				injectionStripLane,
 				temporalLane,

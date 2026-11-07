@@ -153,6 +153,7 @@ describe("supersession selector", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 		};
 		const selection = selectSupersession(context);
 		const tags = getActiveTagsBySession(db, "s-supersede");
@@ -233,6 +234,7 @@ describe("dedup lane", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 		};
 		// The adapter really exposes tool_use parts the core can fingerprint.
 		const { messages } = dedupMessages(laneContext);

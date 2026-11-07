@@ -181,6 +181,7 @@ describe("injection-strip lane", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 		});
 		expect(requests.map((request) => request.messageId).sort()).toEqual([
 			"a-inj",
@@ -209,6 +210,7 @@ describe("injection-strip lane", () => {
 				config: cfg,
 				db,
 				protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 				lanes: [injectionStripLane],
 				gates: new LaneGates(),
 			});
@@ -262,6 +264,7 @@ describe("lane engine containment", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 			lanes: [exploding, injectionStripLane],
 			gates: new LaneGates(),
 		});
@@ -294,6 +297,7 @@ describe("lane engine containment", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 			lanes: [injectionStripLane],
 			gates: new LaneGates(),
 		});
@@ -324,6 +328,7 @@ describe("lane engine containment", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 			lanes: [injectionStripLane],
 			gates: new LaneGates(),
 		});
@@ -361,6 +366,7 @@ describe("temporal lane", () => {
 			config: cfg,
 			db,
 			protectedMessageIds: new Set(),
+			projectDir: process.cwd(),
 		});
 		expect(requests.map((request) => request.messageId)).toEqual(["u2"]);
 		// The gap is measured from the PREVIOUS message's creation (the assistant
@@ -384,6 +390,7 @@ describe("temporal lane", () => {
 			config: { ...cfg, temporal_awareness: false },
 			db,
 			protectedMessageIds: new Set<string>(),
+			projectDir: process.cwd(),
 		};
 		expect(selectTemporalMarkers(context)).toEqual([]);
 

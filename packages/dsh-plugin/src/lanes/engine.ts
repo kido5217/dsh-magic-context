@@ -71,6 +71,8 @@ export interface LaneContext {
 	readonly pressure?: LanePressure;
 	/** The session's latest `todo/write` state, when it has one (T034). */
 	readonly todo?: TodoState;
+	/** Workspace directory backing the project identity (auto-search, memory). */
+	readonly projectDir: string;
 }
 
 /** The pressure facts a lane may price against. */
@@ -128,6 +130,8 @@ export interface LanePassRequest {
 	readonly protectedMessageIds?: ReadonlySet<string>;
 	readonly pressure?: LanePressure;
 	readonly todo?: TodoState;
+	/** Workspace directory backing project identity (auto-search). */
+	readonly projectDir: string;
 	readonly lanes: readonly Lane[];
 	readonly gates: LaneGates;
 }
@@ -155,6 +159,7 @@ export async function runLanePass(
 		protectedMessageIds: request.protectedMessageIds ?? new Set<string>(),
 		...(request.pressure !== undefined ? { pressure: request.pressure } : {}),
 		...(request.todo !== undefined ? { todo: request.todo } : {}),
+		projectDir: request.projectDir,
 	};
 	const outcomes: LaneOutcome[] = [];
 	let changed = false;

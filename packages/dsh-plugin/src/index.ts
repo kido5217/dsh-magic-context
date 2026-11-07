@@ -166,6 +166,7 @@ export function mountAdapter(
 					config,
 					db,
 					protectedMessageIds: new Set<string>(),
+					projectDir: opts.projectDir ?? process.cwd(),
 				},
 				channel1,
 				false,
@@ -275,6 +276,7 @@ export function mountAdapter(
 		historian,
 		dropApplier,
 		managedEdits,
+		projectDir: opts.projectDir ?? process.cwd(),
 		readSessionLog: opts.readSessionLog ?? (() => undefined),
 	});
 	registerEffect("pressure-lanes", () => {
