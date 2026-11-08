@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createTestTempDirFromPath } from "../../../plugin/src/shared/test-temp-dir";
 import {
     baseProfileManifest,
     createDshTestEnv,
@@ -17,7 +18,7 @@ const prompts = new MockPrompts();
 
 /** Point the shared store at an isolated XDG_DATA_HOME and (optionally) init it. */
 function setupStore(opts: { init: boolean }): string {
-    const xdg = mkdtempSync(join(tmpdir(), "mc-dsh-doctor-xdg-"));
+    const xdg = createTestTempDirFromPath(join(tmpdir(), "mc-dsh-doctor-xdg"));
     process.env.XDG_DATA_HOME = xdg;
     if (opts.init) {
         expect(runDoctorStoreInit(() => {})).toBe(0);
@@ -31,7 +32,10 @@ function setupStore(opts: { init: boolean }): string {
 }
 
 function freshLog(): string {
-    const file = join(mkdtempSync(join(tmpdir(), "mc-dsh-doctor-log-")), "magic-context.log");
+    const file = join(
+        createTestTempDirFromPath(join(tmpdir(), "mc-dsh-doctor-log")),
+        "magic-context.log",
+    );
     writeFileSync(file, "line\n");
     process.env.MAGIC_CONTEXT_LOG_PATH = file;
     return file;

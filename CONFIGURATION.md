@@ -24,6 +24,10 @@ Keys listed below apply from the next historian or dreamer run (or dream-timer t
 - `commit_cluster_trigger.enabled`
 - `commit_cluster_trigger.min_clusters`
 - `dreamer.disable`
+- `dreamer.dsh.fallback_models`
+- `dreamer.dsh.model`
+- `dreamer.dsh.tasks`
+- `dreamer.dsh.thinking_level`
 - `dreamer.maxTokens`
 - `dreamer.omp.fallback_models`
 - `dreamer.omp.model`

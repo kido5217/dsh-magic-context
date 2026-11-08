@@ -21,10 +21,14 @@
  * Safe fixes (behind the existing `--fix` convention): add missing bundle rows
  * to the selected profile. Everything else is reported for a manual fix.
  */
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getMagicContextStorageDir } from "@magic-context/core/shared/data-path";
 import { SqliteRuntimeUnavailableError } from "@magic-context/core/shared/sqlite";
+import {
+    ensurePrivateStorageDirectorySync,
+    writeStorageFileAtomicSync,
+} from "@magic-context/core/shared/storage-permissions";
 import {
     DSH_PACKAGE_NAME,
     DSH_PACKAGE_SOURCE,
@@ -218,7 +222,7 @@ function checkStore(results: CheckResult[]): void {
     const storeDir = getMagicContextStorageDir();
     if (!existsSync(storeDir)) {
         try {
-            mkdirSync(storeDir, { recursive: true });
+            ensurePrivateStorageDirectorySync(storeDir);
         } catch {
             results.push(
                 check("fail", `Store directory ${storeDir} does not exist and cannot be created.`),
@@ -229,7 +233,7 @@ function checkStore(results: CheckResult[]): void {
     try {
         // Writability probe: touch a probe file (cheap, no DB involvement).
         const probe = join(storeDir, ".doctor-dsh-probe");
-        writeFileSync(probe, "probe");
+        writeStorageFileAtomicSync(probe, "probe");
         rmSync(probe, { force: true });
     } catch {
         results.push(check("fail", `Store directory ${storeDir} is not writable.`));
