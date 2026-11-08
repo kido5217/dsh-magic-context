@@ -5,6 +5,7 @@ import {
     type AutoSearchDiagnostics,
     autoSearchRelevance,
     recordAutoSearchLane,
+    withMemoryHintContent,
 } from "./auto-search-diagnostics";
 import {
     loadCompartmentChunkEmbeddingsForSearch,
@@ -1020,15 +1021,20 @@ function mergeMemoryResults(args: {
             continue;
         }
 
-        results.push({
-            source: "memory",
-            content: previewText(memory.content),
-            score,
-            memoryId: memory.id,
-            category: memory.category,
-            matchType,
-            sourceName: args.sourceNameByMemoryId?.get(memory.id),
-        });
+        results.push(
+            withMemoryHintContent(
+                {
+                    source: "memory",
+                    content: previewText(memory.content),
+                    score,
+                    memoryId: memory.id,
+                    category: memory.category,
+                    matchType,
+                    sourceName: args.sourceNameByMemoryId?.get(memory.id),
+                },
+                memory.content,
+            ),
+        );
     }
 
     return {

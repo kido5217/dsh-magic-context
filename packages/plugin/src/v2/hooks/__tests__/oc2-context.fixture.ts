@@ -40,6 +40,7 @@ type Row = {
     updated?: number;
     /** The model an assistant row was answered by, when not the fixture's first model. */
     model?: string;
+    metadata?: Record<string, unknown>;
 };
 
 /**
@@ -148,6 +149,7 @@ export async function oc2ContextFixture(
         session: {
             remove: async () => {},
             compact: async () => {},
+            wait: async () => {},
             interrupt: async () => ({ interrupted: true }),
             hook: async (name: string, callback: (draft: SessionContext) => Promise<void>) => {
                 hooks.set(name, callback);
@@ -189,7 +191,11 @@ export async function oc2ContextFixture(
                               cache: { read: 0, write: 0 },
                           },
                       }
-                    : { text: row.text, time: { created: row.created } };
+                    : {
+                          text: row.text,
+                          time: { created: row.created },
+                          ...(row.metadata ? { metadata: row.metadata } : {}),
+                      };
             raw.prepare(
                 "INSERT INTO session_message(id,session_id,type,seq,time_created,time_updated,data) VALUES (?,?,?,?,?,?,?)",
             ).run(
@@ -257,6 +263,7 @@ export async function oc2ContextFixture(
         session,
         host,
         hostStorage: hostContext.storage,
+        hostSession: hostContext.session,
         sessionLogs: () => logs.mock.calls.map((args) => args.map(String).join(" ")),
         /** A new plugin process over the same stores (an upgrade restart). */
         restart: startHook,
@@ -371,13 +378,26 @@ export async function oc2ContextFixture(
         /** A real running native checkpoint, optionally written by the V2
          * admission producer to exercise upgrading a V2 admission record.
          */
-        async nativeFold(protocol: 2 | 3 = 3, windowRows = 0, recentOverride?: string) {
+        async nativeFold(
+            protocol: 2 | 3 = 3,
+            windowRows = 0,
+            recentOverride?: string,
+            reason?: "manual",
+            idOverride?: string,
+        ) {
             if (!lastDraft) throw new Error("serve a request before folding");
-            const id = `native-${seed}-${nextSeq}`;
+            const id = idOverride ?? `native-${seed}-${nextSeq}`;
             const seq = nextSeq++;
             raw.prepare(
                 "INSERT INTO session_message(id,session_id,type,seq,time_created,data) VALUES (?,?,?,?,?,?)",
-            ).run(id, session, "compaction", seq, nowClock, JSON.stringify({ status: "running" }));
+            ).run(
+                id,
+                session,
+                "compaction",
+                seq,
+                nowClock,
+                JSON.stringify({ status: "running", reason }),
+            );
             const draft = structuredClone(lastDraft);
             if (protocol === 2) {
                 const reader = () => new V2StoreReader(process.env.OPENCODE_DB!);
@@ -420,6 +440,7 @@ export async function oc2ContextFixture(
             };
             const data = {
                 status: "completed",
+                reason,
                 summary: draft.result.summary,
                 recent,
                 ...(Object.keys(metadata).length ? { metadata } : {}),
@@ -468,8 +489,9 @@ export async function oc2ContextFixture(
             persist();
         },
         /** An OpenCode 2 instruction update (for example the daily date line). */
-        instruction(text: string) {
+        instruction(text: string, metadata?: Record<string, unknown>) {
             addRow("system", text, 1000);
+            rows.at(-1)!.metadata = metadata;
             persist();
         },
         /** The host edits a stored message in place (same id, new text). */

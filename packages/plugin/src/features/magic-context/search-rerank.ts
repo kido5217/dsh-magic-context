@@ -13,6 +13,7 @@ const DEADLINE_MS = 1500;
 // Keep the existing location/title/body recipe's 1 KiB budget: twenty documents
 // send at most 20 KiB of source text rather than unbounded stored conversations.
 const DOCUMENT_BYTES = 1024;
+const proseWordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
 
 /** Rerank questions and multi-word descriptions; prefer the existing ranking for short symbol-heavy lookups. */
 export function isProseQuery(query: string): boolean {
@@ -25,9 +26,14 @@ export function isProseQuery(query: string): boolean {
     )
         return false;
     if (/\b(?:[A-Z][A-Z_]+:|\w*(?:Error|Exception):)|\bat\s+\S+\s*\(/.test(text)) return false;
-    const words = text.replace(/[?!.]$/, "").split(/\s+/);
+    // Keep ASCII lookup classification stable; other scripts may not separate words with spaces.
+    const words = /(?![a-zA-Z])\p{L}/u.test(text)
+        ? [...proseWordSegmenter.segment(text)]
+              .filter((word) => word.isWordLike)
+              .map((word) => word.segment)
+        : text.replace(/[?!.]$/, "").split(/\s+/);
     if (words.length < 3) return false;
-    const plain = words.filter((word) => /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(word));
+    const plain = words.filter((word) => /^[\p{L}\p{M}]+(?:['’-][\p{L}\p{M}]+)*$/u.test(word));
     if (/^(?:how|why|what|where|when|which|who)\b/i.test(text)) return plain.length >= 3;
     // Three ordinary words distinguish descriptive phrases from symbol lists.
     return words.length >= 4 && plain.length >= 3 && !/[\\/]|::|=/.test(text);
@@ -241,22 +247,19 @@ async function remoteScores(
                     "Content-Type": "application/json",
                     ...(config.api_key ? { Authorization: `Bearer ${config.api_key}` } : {}),
                 },
+                // No `top_n`: Cohere, Jina and OpenRouter return every document
+                // without it, and Voyage refuses it (its equivalent is `top_k`).
                 body: JSON.stringify(
-                    tei
-                        ? { query, texts: documents }
-                        : {
-                              model: config.model,
-                              query,
-                              documents,
-                              top_n: documents.length,
-                          },
+                    tei ? { query, texts: documents } : { model: config.model, query, documents },
                 ),
                 signal: controller.signal,
                 redirect: "error",
             });
             if (!response.ok) throw new RerankFailure(`http_${response.status}`);
             const body = await response.json();
-            const rows = tei ? body : (body as { results?: unknown } | null)?.results;
+            // Cohere-style servers answer `results`; Voyage answers `data`.
+            const reply = body as { results?: unknown; data?: unknown } | null;
+            const rows = tei ? body : (reply?.results ?? reply?.data);
             if (!Array.isArray(rows) || rows.length !== documents.length)
                 throw new RerankFailure("invalid_reply");
             const scores = new Array<number>(documents.length);

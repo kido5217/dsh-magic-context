@@ -8,7 +8,9 @@ import {
     type V2RowStamp,
     type V2StoreReader,
 } from "../store-reader";
+import { supersededInstructionIDs } from "./code-mode-catalog";
 import { hostMediaAsset, hostUsesMediaAssets, rememberHostMedia } from "./host-media";
+import { retiredLiveInstructionIDs } from "./instruction-supersession";
 import type { NativeFoldCache, NativeRowRecord } from "./memory-cache";
 import { encodeNative, NativeReplayUnavailable, reviveNative } from "./native-codec";
 import {
@@ -23,6 +25,7 @@ import {
     hostCheckpointCarrier,
     importedFloor,
     insertControls,
+    instructionRetirement,
     type ReplayFloor,
     type ReplayStateV3,
     validAdmissionV3,
@@ -52,12 +55,24 @@ interface DurableSnapshot {
     summaryDigest: string;
     historyDigest: string;
 }
+interface SupplyArgs {
+    draft: SessionContext;
+    reader: V2StoreReader;
+    summary: string;
+    previousCut?: StoreRow<"compaction">;
+    manual?: { replay: ReplayStateV3; commit: () => void };
+}
 const coordinates = new WeakMap<V2Message, string>();
+const sequences = new WeakMap<V2Message, number>();
+export function nativeRowSequence(message: V2Message): number | undefined {
+    return sequences.get(message);
+}
 export function nativeRowID(message: V2Message): string | undefined {
     return coordinates.get(message) ?? message.id;
 }
-export function bindNativeRowID(message: V2Message, id: string): void {
+export function bindNativeRowID(message: V2Message, id: string, seq?: number): void {
     coordinates.set(message, id);
+    if (seq !== undefined) sequences.set(message, seq);
 }
 export function copyNativeInput(messages: readonly V2Message[]): V2Message[] {
     const copies = reviveNative(encodeNative(messages));
@@ -65,6 +80,8 @@ export function copyNativeInput(messages: readonly V2Message[]): V2Message[] {
         const original = messages[i];
         const id = original && nativeRowID(original);
         if (id !== undefined) coordinates.set(copy, id);
+        const seq = original && sequences.get(original);
+        if (seq !== undefined) sequences.set(copy, seq);
     });
     return copies;
 }
@@ -226,6 +243,59 @@ export class NativeFoldReplay {
     }
     async baseline(sessionID: string): Promise<string | undefined> {
         return this.tail(sessionID)?.baseline;
+    }
+    async retiredInstructionThrough(sessionID: string, reader: V2StoreReader): Promise<number> {
+        if (!reader.latestCompaction(sessionID)) return -1;
+        return (await this.floorState(sessionID, reader))?.retiredInstructionThrough ?? -1;
+    }
+    async instructionRetirement(sessionID: string, reader: V2StoreReader) {
+        if (!reader.latestCompaction(sessionID)) return instructionRetirement();
+        return instructionRetirement(await this.floorState(sessionID, reader));
+    }
+
+    /** A deliberate host compaction rebuilds history but must keep unsummarized conversation. */
+    async prepareManualFold(
+        sessionID: string,
+        reader: V2StoreReader,
+        boundaryID: string | null,
+        summary: string,
+    ): Promise<ReplayStateV3> {
+        const running = reader.latestRunningCompaction(sessionID);
+        if (!running || this.options.protocol !== 3)
+            throw new NativeReplayUnavailable("Manual compaction has no running host checkpoint");
+        const previous = await this.floorState(sessionID, reader);
+        if (this.unprovenControls.has(sessionID) || previous?.blocked)
+            throw new NativeReplayUnavailable("Manual compaction controls have not been captured");
+        const seq = boundaryID ? reader.sequenceForId(sessionID, boundaryID) : undefined;
+        const row = seq === undefined ? undefined : reader.range(sessionID, seq - 1, seq)[0];
+        const first = reader.page(sessionID, { limit: 1 }).rows[0];
+        // A newly rendered summary can cover less than the previous baseline.
+        // Its boundary, not the previous checkpoint's higher floor, owns this cut.
+        let floor = row ? floorFor(row, "summary") : undefined;
+        floor ??= first ? floorFor(first, "start") : undefined;
+        if (!floor) throw new NativeReplayUnavailable("Manual compaction has no history boundary");
+        const instructions = reader.instructionRowsThrough(sessionID, running.seq - 1);
+        const retiredInstructionIDs: string[] = [];
+        const superseded = supersededInstructionIDs(instructions);
+        const liveRetired = retiredLiveInstructionIDs(this.storage.db, sessionID);
+        for (const instruction of [...instructions].reverse()) {
+            const text = instruction.data.text ?? "";
+            // Beyond summary coverage, retire only a same-identity replacement
+            // (the host's catalog notice) or content re-stated by the fresh fold.
+            if (
+                instruction.seq > floor.after &&
+                (liveRetired.has(instruction.id) ||
+                    superseded.has(instruction.id) ||
+                    (text.length > 0 && summary.includes(text)))
+            )
+                retiredInstructionIDs.push(instruction.id);
+        }
+        return {
+            floor,
+            controls: previous?.controls ?? [],
+            ...(floor.after >= 0 ? { retiredInstructionThrough: floor.after } : {}),
+            retiredInstructionIDs,
+        };
     }
     private admissionKey(sessionID: string): string {
         return this.options.protocol === 3
@@ -597,7 +667,7 @@ export class NativeFoldReplay {
             .filter((row) => row.seq > pending.value.replay.floor.after)
             .flatMap((row) => {
                 const messages = this.rendered(structuredClone(row), model);
-                for (const message of messages) coordinates.set(message, row.id);
+                for (const message of messages) bindNativeRowID(message, row.id, row.seq);
                 return messages;
             });
     }
@@ -928,6 +998,7 @@ export class NativeFoldReplay {
         const { sessionID, cut, model, reader } = args;
         if (!isLocalCheckpoint(cut) || cut.session_id !== sessionID) return undefined;
         let after = -1;
+        const retired = instructionRetirement(replayOverride ?? this.tail(sessionID)?.replay);
         if (this.options.protocol === 3) {
             const replay = replayOverride ?? this.tail(sessionID)?.replay;
             if (!replay || !validFloor(reader, sessionID, replay.floor)) return undefined;
@@ -961,9 +1032,10 @@ export class NativeFoldReplay {
             )
         )
             .filter(conversational)
+            .filter((row) => !retired(row))
             .filter((row) => row.seq > after && row.seq <= through);
         const tail = this.tail(sessionID);
-        let records: readonly Pick<NativeRowRecord, "id" | "data">[];
+        let records: readonly Pick<NativeRowRecord, "id" | "data" | "type" | "seq">[];
         if (
             !this.dirty.has(sessionID) &&
             tail?.model === `${model.providerID}/${model.id}` &&
@@ -981,11 +1053,13 @@ export class NativeFoldReplay {
             const restored = new Set(records.map((row) => row.id));
             if (required.some((row) => !restored.has(row.id))) return undefined;
         }
-        const projected = records.flatMap((row) => {
-            const messages = reviveNative(JSON.parse(row.data) as V2Message[]);
-            for (const message of messages) coordinates.set(message, row.id);
-            return messages;
-        });
+        const projected = records
+            .filter((row) => !retired(row))
+            .flatMap((row) => {
+                const messages = reviveNative(JSON.parse(row.data) as V2Message[]);
+                for (const message of messages) bindNativeRowID(message, row.id, row.seq);
+                return messages;
+            });
         return this.options.protocol === 3
             ? insertControls(
                   projected,
@@ -1031,8 +1105,30 @@ export class NativeFoldReplay {
         sessionID: string,
         native: readonly V2Message[],
         reader: V2StoreReader,
-        after?: number,
+        selection?: { floor: ReplayFloor; baseline?: string },
     ): Omit<NativeRowRecord, "revision">[] {
+        const after = selection?.floor.after;
+        const candidates = native.flatMap((message) => {
+            if (!selection) return [{ message, covered: false }];
+            const id = nativeRowID(message);
+            if (
+                effortPart(message) ||
+                HEAD_IDS.some((head) => head === id) ||
+                (!id &&
+                    selection.baseline &&
+                    message.role === "user" &&
+                    message.content.some(
+                        (part) => part.type === "text" && part.text === selection.baseline,
+                    ))
+            )
+                return [];
+            const seq =
+                id && selection.floor.kind !== "start"
+                    ? reader.sequenceForId(sessionID, id)
+                    : undefined;
+            return [{ message, covered: seq !== undefined && seq <= selection.floor.after }];
+        });
+        native = candidates.filter(({ covered }) => !covered).map(({ message }) => message);
         const through = reader.latestSequence(sessionID);
         const retained = this.stampMRU;
         let metadata = this.metadata.get(sessionID);
@@ -1090,7 +1186,15 @@ export class NativeFoldReplay {
         const leadingIDs = new Map(leading.map((message, i) => [message, leadingRows[i]?.id]));
         let cursor = -1;
         let owner: string | undefined;
-        for (const message of native) {
+        // Apply the summary boundary while binding source rows so id-less tool
+        // results use the same owner. Skipped synthetic history and unmatched
+        // systems cannot replace it; dropping an assistant already summarized
+        // must also drop its results.
+        for (const { message, covered } of candidates) {
+            if (covered) {
+                if (message.role !== "tool") owner = undefined;
+                continue;
+            }
             let id = nativeRowID(message);
             if (this.options.protocol === 3 && !id && message.role === "system") {
                 const text = message.content
@@ -1115,12 +1219,15 @@ export class NativeFoldReplay {
                     if (!id) continue;
                 } else id = metadata.find((row) => row.type === "system" && row.seq > cursor)?.id;
             }
-            if (!id && message.role === "tool") id = owner;
+            if (!id && message.role === "tool") {
+                id = owner;
+                if (selection && !id) continue;
+            }
             const row = id ? byID.get(id) : undefined;
             if (!row)
                 throw new NativeReplayUnavailable("Native carrier has no source row coordinate");
             cursor = row.seq;
-            coordinates.set(message, row.id);
+            bindNativeRowID(message, row.id, row.seq);
             if (message.role !== "tool") owner = row.id;
             const messages = grouped.get(row) ?? [];
             messages.push(message);
@@ -1142,7 +1249,6 @@ export class NativeFoldReplay {
             rememberHostMedia(native);
             const reader = this.openReader(draft.sessionID);
             try {
-                let captured = native;
                 if (this.options.protocol === 3) {
                     replay = await this.floorState(draft.sessionID, reader, boundary, draft);
                     if (!replay)
@@ -1151,27 +1257,13 @@ export class NativeFoldReplay {
                     // repeated text, against source records before capturing controls.
                     // controls must use those source identities, not a text match.
                     replay = { ...replay, blocked: false };
-                    const replayAfter = replay.floor.after;
-                    const replayStart = replay.floor.kind === "start";
-                    captured = native.filter((message) => {
-                        if (effortPart(message)) return false;
-                        const id = nativeRowID(message);
-                        if (HEAD_IDS.some((head) => head === id)) return false;
-                        const baseline = this.servedBaseline(draft);
-                        if (!id)
-                            return !(
-                                baseline &&
-                                message.role === "user" &&
-                                message.content.some(
-                                    (part) => part.type === "text" && part.text === baseline,
-                                )
-                            );
-                        if (replayStart) return true;
-                        const seq = reader.sequenceForId(draft.sessionID, id);
-                        return seq === undefined || seq > replayAfter;
-                    });
                 }
-                let rows = this.records(draft.sessionID, captured, reader, replay?.floor.after);
+                let rows = replay
+                    ? this.records(draft.sessionID, native, reader, {
+                          floor: replay.floor,
+                          baseline: this.servedBaseline(draft),
+                      })
+                    : this.records(draft.sessionID, native, reader);
                 if (replay) {
                     const identities = new Map<string, string[]>();
                     for (const row of rows.filter((row) => row.type === "system")) {
@@ -1300,12 +1392,7 @@ export class NativeFoldReplay {
             !this.unavailable.has(sessionID) && typeof (await this.baseline(sessionID)) === "string"
         );
     }
-    async supply(args: {
-        draft: SessionContext;
-        reader: V2StoreReader;
-        summary: string;
-        previousCut?: StoreRow<"compaction">;
-    }): Promise<boolean> {
+    async supply(args: SupplyArgs): Promise<boolean> {
         const release = this.storage.hold(args.draft.sessionID);
         try {
             return await this.supplyHeld(args);
@@ -1314,12 +1401,7 @@ export class NativeFoldReplay {
             release();
         }
     }
-    private async supplyHeld(args: {
-        draft: SessionContext;
-        reader: V2StoreReader;
-        summary: string;
-        previousCut?: StoreRow<"compaction">;
-    }): Promise<boolean> {
+    private async supplyHeld(args: SupplyArgs): Promise<boolean> {
         const { draft, reader, summary } = args;
         if (this.options.protocol === 3) {
             if (this.unprovenControls.has(draft.sessionID)) return false;
@@ -1329,40 +1411,71 @@ export class NativeFoldReplay {
             )
                 return false;
             const running = reader.latestRunningCompaction(draft.sessionID);
-            const replay = await this.floorState(
-                draft.sessionID,
-                reader,
-                undefined,
-                undefined,
-                true,
-            );
+            let replay =
+                args.manual?.replay ??
+                (await this.floorState(draft.sessionID, reader, undefined, undefined, true));
             if (!running || !replay || replay.blocked) {
                 this.report(draft.sessionID, "fold refused: no usable host checkpoint boundary");
                 return false;
             }
+            const liveRetired = retiredLiveInstructionIDs(this.storage.db, draft.sessionID);
+            const absentRetired =
+                liveRetired.size === 0
+                    ? []
+                    : reader
+                          .instructionRowsThrough(
+                              draft.sessionID,
+                              reader.latestSequence(draft.sessionID),
+                          )
+                          .filter(
+                              (row) =>
+                                  liveRetired.has(row.id) &&
+                                  !draft.messages.some(
+                                      (message) =>
+                                          nativeRowID(message) === row.id ||
+                                          (message.role === "system" &&
+                                              !nativeRowID(message) &&
+                                              message.content
+                                                  .map((part) => part.text ?? "")
+                                                  .join("") === row.data.text),
+                                  ),
+                          )
+                          .map((row) => row.id);
+            // A checkpoint can take ownership of live retirements only when its
+            // input already omits those rows. Adoption must not remove instruction
+            // rows that are still present in the input.
+            if (absentRetired.length > 0)
+                replay = {
+                    ...replay,
+                    retiredInstructionIDs: [
+                        ...new Set([...(replay.retiredInstructionIDs ?? []), ...absentRetired]),
+                    ],
+                };
             const model = `${draft.model.providerID}/${draft.model.id}`;
-            if (this.tail(draft.sessionID)?.model !== model)
+            if (!args.manual && this.tail(draft.sessionID)?.model !== model)
                 this.storage.replaceRows(
                     draft.sessionID,
                     reader.latestSequence(draft.sessionID),
                     [],
                 );
-            await this.retainReplay(
-                draft.sessionID,
-                replay,
-                model,
-                reader.latestSequence(draft.sessionID),
-            );
-            await this.storage.supply(
-                draft.sessionID,
-                running.id,
-                JSON.stringify({
-                    source: this.storage.sourceID,
-                    sessionID: draft.sessionID,
-                    admissionID: running.id,
-                    summary,
-                }),
-            );
+            if (!args.manual)
+                await this.retainReplay(
+                    draft.sessionID,
+                    replay,
+                    model,
+                    reader.latestSequence(draft.sessionID),
+                );
+            if (!args.manual)
+                await this.storage.supply(
+                    draft.sessionID,
+                    running.id,
+                    JSON.stringify({
+                        source: this.storage.sourceID,
+                        sessionID: draft.sessionID,
+                        admissionID: running.id,
+                        summary,
+                    }),
+                );
             const value: AdmissionV3 = {
                 version: 3,
                 replay,
@@ -1380,6 +1493,59 @@ export class NativeFoldReplay {
                 },
             };
             const payload = encodeAdmissionV3(value);
+            if (args.manual) {
+                const keys = [
+                    capturedReplayKey(draft.sessionID),
+                    this.admissionKey(draft.sessionID),
+                ];
+                const old = await Promise.all(keys.map((key) => this.admissions?.get(key)));
+                const capture: CapturedReplayV3 = {
+                    version: 3,
+                    sessionID: draft.sessionID,
+                    sourceDigest: foldDigest(reader.hostIdentity()),
+                    through: reader.latestSequence(draft.sessionID),
+                    replay,
+                };
+                const capturedPayload = JSON.stringify(capture);
+                let written = 0;
+                try {
+                    for (const [index, key] of keys.entries()) {
+                        const data = index === 0 ? capturedPayload : payload;
+                        await this.admissions?.set(key, {
+                            payload: data,
+                            digest: foldDigest(data),
+                        });
+                        written++;
+                    }
+                    args.manual.commit();
+                } catch (error) {
+                    // Undo only successful writes so a refused admission leaves
+                    // the previously stored replay and checkpoint unchanged.
+                    for (let index = written - 1; index >= 0; index--) {
+                        const key = keys[index];
+                        if (!key) continue;
+                        if (old[index] !== undefined) await this.admissions?.set(key, old[index]);
+                        else if (this.admissions?.remove) await this.admissions.remove(key);
+                        else await this.admissions?.set(key, null);
+                    }
+                    throw error;
+                }
+                this.invalidate(draft.sessionID);
+                this.cancelLegacyUpgrade(draft.sessionID);
+                this.cancelEditedAdmission(draft.sessionID);
+                await this.retainReplay(draft.sessionID, replay, model, running.seq - 1);
+                await this.storage.supply(
+                    draft.sessionID,
+                    running.id,
+                    JSON.stringify({
+                        source: this.storage.sourceID,
+                        sessionID: draft.sessionID,
+                        admissionID: running.id,
+                        summary,
+                    }),
+                );
+                return true;
+            }
             await this.admissions?.set(this.admissionKey(draft.sessionID), {
                 payload,
                 digest: foldDigest(payload),
@@ -1448,7 +1614,12 @@ export class NativeFoldReplay {
         sessionID: string,
         cut: StoreRow<"compaction">,
         model: string,
-        options: { bounded?: boolean; after?: number } = {},
+        options: {
+            bounded?: boolean;
+            after?: number;
+            retiredInstructionThrough?: number;
+            retiredInstructionIDs?: string[];
+        } = {},
     ): Promise<V2Message[] | undefined> {
         let replay: ReplayStateV3 | undefined;
         let controls: ReplayStateV3["controls"] = [];
@@ -1465,7 +1636,13 @@ export class NativeFoldReplay {
                 this.report(sessionID, "replay refused: missing usable checkpoint boundary");
                 throw new NativeReplayUnavailable("Host checkpoint replay boundary is unavailable");
             }
-            options = { ...options, bounded: false, after: replay.floor.after };
+            options = {
+                ...options,
+                bounded: false,
+                after: replay.floor.after,
+                retiredInstructionThrough: replay.retiredInstructionThrough,
+                retiredInstructionIDs: replay.retiredInstructionIDs,
+            };
         }
         const release = this.storage.hold(sessionID);
         let result: V2Message[] | undefined;
@@ -1485,7 +1662,12 @@ export class NativeFoldReplay {
         sessionID: string,
         cut: StoreRow<"compaction">,
         model: string,
-        options: { bounded?: boolean; after?: number },
+        options: {
+            bounded?: boolean;
+            after?: number;
+            retiredInstructionThrough?: number;
+            retiredInstructionIDs?: string[];
+        },
     ): Promise<V2Message[] | undefined> {
         if (!isLocalCheckpoint(cut)) return undefined;
         const resolvedModel = {
@@ -1571,9 +1753,11 @@ export class NativeFoldReplay {
             reader?.close();
         }
         const messages: V2Message[] = [];
+        const retired = instructionRetirement(options);
         for (const row of this.storage.rows(sessionID, after, cut.seq - 1)) {
+            if (retired(row)) continue;
             const revived = reviveNative(JSON.parse(row.data) as V2Message[]);
-            for (const message of revived) coordinates.set(message, row.id);
+            for (const message of revived) bindNativeRowID(message, row.id, row.seq);
             messages.push(...revived);
         }
         return messages;
@@ -1591,12 +1775,14 @@ export class NativeFoldReplay {
                 this.report(sessionID, "replay refused: missing usable checkpoint boundary");
                 throw new NativeReplayUnavailable("Host checkpoint replay boundary is unavailable");
             }
+            const retired = instructionRetirement(replay);
             const messages = reader
                 .range(sessionID, replay?.floor.after ?? -1, cut.seq - 1)
                 .filter(conversational)
+                .filter((row) => !retired(row))
                 .flatMap((row) => {
                     const messages = this.rendered(row, model);
-                    for (const message of messages) coordinates.set(message, row.id);
+                    for (const message of messages) bindNativeRowID(message, row.id, row.seq);
                     return messages;
                 });
             return replay
