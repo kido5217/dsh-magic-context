@@ -404,12 +404,17 @@ function resolvePiInvocation(
 	const env = options.env ?? process.env;
 	const resolvePackageJson =
 		options.resolvePackageJson ?? defaultResolvePiPackageJson;
+	// An embedded editor is not a JavaScript CLI runtime. Use PATH Node for
+	// package scripts instead of re-launching the Electron application.
+	const scriptRuntime = isGenericRuntimeExecutable(execPath)
+		? execPath
+		: "node";
 	const running = resolvePiCliFromRunningEntry(currentScript, fs);
 	const checkedPaths = [...running.checkedPaths];
 
 	if (running.cliPath) {
 		return {
-			command: execPath,
+			command: scriptRuntime,
 			prefixArgs: [running.cliPath],
 			targetHarness:
 				running.targetHarness ??
@@ -418,7 +423,11 @@ function resolvePiInvocation(
 		};
 	}
 
-	if (!isGenericRuntimeExecutable(execPath)) {
+	if (
+		piHarnessKindFromExecutable(execPath) !== undefined ||
+		(!isGenericRuntimeExecutable(execPath) &&
+			currentScript?.startsWith(BUN_VIRTUAL_SCRIPT_PREFIX))
+	) {
 		// For a packaged single-file CLI, the executable itself parses argv.
 		return {
 			command: execPath,
@@ -436,7 +445,7 @@ function resolvePiInvocation(
 	);
 	if (bundled.cliPath) {
 		return {
-			command: execPath,
+			command: scriptRuntime,
 			prefixArgs: [bundled.cliPath],
 			targetHarness:
 				bundled.targetHarness ??
@@ -2659,14 +2668,17 @@ function isProviderCredentialFailure(
 	result: SubagentRunResult,
 	attempt: ProviderModelAttempt,
 ): result is FailedRunResult {
-	return (
-		attempt.translated &&
-		!result.ok &&
-		result.reason === "non_zero_exit" &&
-		getResultStderr(result).includes(
-			`No API key found for ${attempt.attemptedProvider}`,
-		)
-	);
+	if (!attempt.translated || result.ok) return false;
+	const missingKey = `No API key found for ${attempt.attemptedProvider}`;
+	// Pi reports a missing key in one of two ways: a one-shot child exits
+	// non-zero with the message on stderr, and an RPC-mode child (the dreamer)
+	// refuses its `prompt` command, which the runner reports as `model_failed`
+	// with the message in `error`.
+	if (result.reason === "non_zero_exit")
+		return getResultStderr(result).includes(missingKey);
+	if (result.reason === "model_failed")
+		return (result.error ?? "").includes(missingKey);
+	return false;
 }
 
 /**

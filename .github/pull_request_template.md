@@ -9,3 +9,4 @@ For each entry select: covered / not applicable — surface does not exist there
 - [ ] Pi:
 - [ ] OMP:
 - [ ] Rust module:
+- [ ] DSH (DeepSeek Harness):

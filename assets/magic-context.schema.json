@@ -42,7 +42,7 @@
       ]
     },
     "auto_update": {
-      "description": "Enable automatic npm self-update checks for the OpenCode plugin. Security: USER-only in config loader, so hostile project configs cannot suppress updates.",
+      "description": "Enable automatic npm self-update checks for the OpenCode plugin. Security: USER-only in config loader, so hostile project configs cannot suppress updates. DSH is supported the same way: its maintenance lane checks npm and applies `dsh plugin --profile <name> add <pkg>@<version>` (restart-required), skipping dev (link:) and exact-version installs.",
       "type": "boolean"
     },
     "language": {
@@ -1309,6 +1309,203 @@
           "description": "Strict OpenCode dreamer model-resolution block. It accepts no Pi vocabulary."
         },
         "pi": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "description": "Primary Pi model entry.",
+              "x-mc-live-reload": true,
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "description": "Pi model ID (for example, provider/model)."
+                    },
+                    "thinking_level": {
+                      "description": "Pi thinking level for this entry.",
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "minimal",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "model"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "fallback_models": {
+              "description": "Ordered fallback Pi entries. New-shape configuration requires an array; legacy singleton values migrate to a one-element array.",
+              "x-mc-live-reload": true,
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "type": "string",
+                        "description": "Pi model ID (for example, provider/model)."
+                      },
+                      "thinking_level": {
+                        "description": "Pi thinking level for this entry.",
+                        "type": "string",
+                        "enum": [
+                          "off",
+                          "minimal",
+                          "low",
+                          "medium",
+                          "high",
+                          "xhigh",
+                          "max"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "model"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "thinking_level": {
+              "description": "Pi thinking level for the primary entry when it declares none. Fallback entries declare thinking levels per-entry.",
+              "x-mc-live-reload": true,
+              "type": "string",
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            "tasks": {
+              "description": "Pi task execution overrides. Each named task accepts only model, fallback_models, thinking_level, and timeout_minutes.",
+              "x-mc-live-reload": true,
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "description": "Pi model entry for this task.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "model": {
+                            "type": "string",
+                            "description": "Pi model ID (for example, provider/model)."
+                          },
+                          "thinking_level": {
+                            "description": "Pi thinking level for this entry.",
+                            "type": "string",
+                            "enum": [
+                              "off",
+                              "minimal",
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "model"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "fallback_models": {
+                    "description": "Ordered Pi fallback entries for this task.",
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "model": {
+                              "type": "string",
+                              "description": "Pi model ID (for example, provider/model)."
+                            },
+                            "thinking_level": {
+                              "description": "Pi thinking level for this entry.",
+                              "type": "string",
+                              "enum": [
+                                "off",
+                                "minimal",
+                                "low",
+                                "medium",
+                                "high",
+                                "xhigh",
+                                "max"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "model"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "thinking_level": {
+                    "description": "Pi thinking level for this task's primary entry when it declares none. Fallback entries declare thinking levels per-entry.",
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "minimal",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  "timeout_minutes": {
+                    "description": "Minutes allowed for this task before it is aborted.",
+                    "type": "number",
+                    "minimum": 5
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false,
+          "description": "Strict Pi dreamer model-resolution block. It accepts no OpenCode vocabulary."
+        },
+        "dsh": {
           "type": "object",
           "properties": {
             "model": {

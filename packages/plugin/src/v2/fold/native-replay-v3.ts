@@ -25,6 +25,8 @@ export interface ReplayStateV3 {
     blocked?: boolean;
     upgrade?: { admissionID: string; mode: "bounded" | "host-checkpoint" | "source-repair" };
     withoutRecentContext?: boolean;
+    retiredInstructionThrough?: number;
+    retiredInstructionIDs?: string[];
 }
 export class ControlMetadataUnavailable extends Error {}
 export interface AdmissionV3 {
@@ -58,7 +60,15 @@ const digest = (value: unknown): value is string =>
 export function validReplayState(value: unknown): value is ReplayStateV3 {
     if (
         !object(value) ||
-        !keys(value, ["floor", "controls", "blocked", "upgrade", "withoutRecentContext"])
+        !keys(value, [
+            "floor",
+            "controls",
+            "blocked",
+            "upgrade",
+            "withoutRecentContext",
+            "retiredInstructionThrough",
+            "retiredInstructionIDs",
+        ])
     )
         return false;
     const floor = value.floor;
@@ -81,12 +91,27 @@ export function validReplayState(value: unknown): value is ReplayStateV3 {
         (value.blocked === undefined || typeof value.blocked === "boolean") &&
         (value.withoutRecentContext === undefined ||
             typeof value.withoutRecentContext === "boolean") &&
+        (value.retiredInstructionThrough === undefined ||
+            (Number.isSafeInteger(value.retiredInstructionThrough) &&
+                (value.retiredInstructionThrough as number) >= 0)) &&
+        (value.retiredInstructionIDs === undefined ||
+            (Array.isArray(value.retiredInstructionIDs) &&
+                value.retiredInstructionIDs.every(identity))) &&
         (upgrade === undefined ||
             (object(upgrade) &&
                 keys(upgrade, ["admissionID", "mode"]) &&
                 identity(upgrade.admissionID) &&
                 ["bounded", "host-checkpoint", "source-repair"].includes(upgrade.mode as string)))
     );
+}
+
+export function instructionRetirement(
+    replay?: Pick<ReplayStateV3, "retiredInstructionThrough" | "retiredInstructionIDs">,
+) {
+    const ids = new Set(replay?.retiredInstructionIDs);
+    const through = replay?.retiredInstructionThrough ?? -1;
+    return (row: { type: string; id: string; seq: number }) =>
+        row.type === "system" && (row.seq <= through || ids.has(row.id));
 }
 
 export function validAdmissionV3(value: unknown): value is AdmissionV3 {

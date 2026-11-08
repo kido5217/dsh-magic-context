@@ -1721,6 +1721,12 @@ export const LIVE_RELOAD_CONFIG_PATHS = [
     "dreamer.omp.fallback_models",
     "dreamer.omp.thinking_level",
     "dreamer.omp.tasks",
+    // DSH reuses the Pi harness block; register its paths so the shared node's
+    // live marks stay consistent with the drift test's expected set.
+    "dreamer.dsh.model",
+    "dreamer.dsh.fallback_models",
+    "dreamer.dsh.thinking_level",
+    "dreamer.dsh.tasks",
     "dreamer.tasks.map-memories.schedule",
     "dreamer.tasks.verify.schedule",
     "dreamer.tasks.verify-broad.schedule",
